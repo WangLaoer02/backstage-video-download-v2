@@ -1,0 +1,85 @@
+{
+  "skill_id": "backstage-video-download",
+  "name": "后台视频下载 - 改竖处理",
+  "version": "2.0.0",
+  "author": "OpenClaw Team",
+  "description": "从广告平台 API 批量下载视频，自动改竖处理、贴图匹配、写表闭环",
+  "category": "media_processing",
+  "keywords": ["视频下载", "改竖", "批量处理", "自动化"],
+  "compatibility": {
+    "os": ["macos", "linux"],
+    "python_version": ">=3.9",
+    "external_tools": ["ffmpeg", "ffprobe"]
+  },
+  "triggers": [
+    "下载视频",
+    "后台下载",
+    "广告平台视频"
+  ],
+  "environment_vars": [
+    {
+      "name": "FEISHU_ACCESS_TOKEN",
+      "required": false,
+      "description": "飞书 API 访问令牌，用于写表",
+      "example": "Bearer xxx"
+    },
+    {
+      "name": "VISION_API_KEY",
+      "required": false,
+      "description": "视觉识别 API Key（用于 IP 识别）",
+      "example": "sk_xxx"
+    },
+    {
+      "name": "VISION_API_URL",
+      "required": false,
+      "description": "视觉识别 API 端点",
+      "example": "https://api.jiekou.ai/openai/v1/chat/completions"
+    }
+  ],
+  "dependencies": {
+    "pip": [
+      "requests>=2.28.0",
+      "Pillow>=9.0.0"
+    ]
+  },
+  "entry_points": {
+    "download": "scripts/download.py",
+    "handler": "scripts/handler.py"
+  },
+  "features": [
+    {
+      "name": "下载视频",
+      "description": "从 API 下载单个或批量视频",
+      "status": "stable"
+    },
+    {
+      "name": "改竖处理",
+      "description": "自动改竖处理（含贴图匹配）",
+      "status": "stable"
+    },
+    {
+      "name": "AI 角色识别",
+      "description": "使用 Vision API 识别动漫 IP 和角色",
+      "status": "beta"
+    },
+    {
+      "name": "写表闭环",
+      "description": "自动写入飞书表格",
+      "status": "stable"
+    }
+  ],
+  "changelog": {
+    "2.0.0": [
+      "修复 _call_vision 函数重复定义 bug",
+      "修复第 715 行参数传递错误",
+      "移除硬编码 API key，改用环境变量",
+      "添加完整的 handler.py 实现",
+      "改进并发控制，防止序号冲突",
+      "规范化项目结构",
+      "添加完整的类型提示",
+      "添加单元测试框架"
+    ],
+    "1.0.0": "初始版本"
+  }
+}
+
