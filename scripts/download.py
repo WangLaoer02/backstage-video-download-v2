@@ -158,7 +158,7 @@ def _call_vision_api_v2(frame_path):
              "--prompt", prompt,
              "--output", "json",
              "--non-interactive"],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=60
         )
         if result.returncode != 0:
             return None
@@ -195,21 +195,23 @@ def find_cover_image(filename="", video_path=None):
     import glob
 
     kimetsu_map = {
-        "义勇": "富冈义勇", "富冈": "富冈义勇", "炭治郎": "我妻善逸",
-        "善逸": "我妻善逸", "祢豆子": "祢豆子", "蜜璃": "甘露寺蜜璃",
+        "义勇": "富冈义勇", "富冈": "富冈义勇", "炭治郎": "灶门炭治郎",
+        "善逸": "我妻善逸", "祢豆子": "灶门祢豆子", "蜜璃": "甘露寺蜜璃",
         "甘露寺": "甘露寺蜜璃", "蝴蝶": "蝴蝶忍", "蝴蝶忍": "蝴蝶忍",
-        "岩柱": "岩柱", "炼狱": "炼狱杏寿郎", "黑死牟": "黑死牟",
+        "岩柱": "岩柱", "悲鸣": "岩柱", "行冥": "岩柱",
+        "炼狱": "炼狱杏寿郎", "杏寿郎": "炼狱杏寿郎",
+        "黑死牟": "黑死牟",
     }
     jujutsu_map = {
         "甚尔": "伏黑甚尔", "伏黑": "伏黑甚尔", "宿傩": "宿傩",
-        "五条悟": "五条悟", "虎杖": "虎杖悠仁", "七海": "七海",
+        "五条悟": "五条悟", "五条": "五条悟", "虎杖": "虎杖悠仁", "七海": "七海",
         "东堂": "东堂葵", "禅院": "禅院", "真人": "真人",
         "夏油": "夏油杰", "乙骨": "乙骨",
     }
     naruto_map = {
         "鼬": "宇智波鼬", "斑": "宇智波斑", "佐助": "宇智波佐助",
         "鸣人": "漩涡鸣人", "水门": "波风水门", "纲手": "纲手",
-        "柱间": "千手柱间", "自来也": "自来也", "佩恩": "佩恩",
+        "柱间": "千手柱间", "初代": "千手柱间", "初代火影": "千手柱间", "自来也": "自来也", "佩恩": "佩恩",
         "夜凯": "夜凯", "小樱": "春野樱",
         "卡卡西": "旗木卡卡西", "凯": "迈特凯",
     }
@@ -221,11 +223,11 @@ def find_cover_image(filename="", video_path=None):
                     dir_path = Path(ASSETS_DIR) / subdir
                     paths = list(dir_path.glob(f"*{char}*.{ext}"))
                     if paths:
-                        return str(random.choice(paths))
+                        return str(sorted(paths)[0])
                     # 模糊：只要文件名包含该词就行
                     all_paths = list(Path(ASSETS_DIR).rglob(f"*{char}*.{ext}"))
                     if all_paths:
-                        return str(random.choice(all_paths))
+                        return str(sorted(all_paths)[0])
         return None
 
     # 1. 鬼灭
@@ -259,10 +261,10 @@ def find_cover_image(filename="", video_path=None):
                         for ext in ["jpg", "png", "jpeg", "webp"]:
                             candidates = list(dir_path.glob(f"*{char}*.{ext}"))
                             if candidates:
-                                return str(random.choice(candidates)), False
+                                return str(sorted(candidates)[0]), False
                             all_cands = list(Path(ASSETS_DIR).rglob(f"*{char}*.{ext}"))
                             if all_cands:
-                                return str(random.choice(all_cands)), False
+                                return str(sorted(all_cands)[0]), False
         try:
             os.remove(frame_path)
         except:
@@ -275,7 +277,7 @@ def find_cover_image(filename="", video_path=None):
         for ext in ["jpg", "png", "jpeg", "webp"]:
             imgs.extend(fallback_dir.glob(f"*.{ext}"))
         if imgs:
-            return str(random.choice(imgs)), True   # (path, is_fallback=True → 写表时标记待确认)
+            return str(sorted(imgs)[0]), True   # (path, is_fallback=True → 写表时标记待确认)
     return None, False
 
 def check_moov_integrity(path):
