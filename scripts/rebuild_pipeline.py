@@ -19,7 +19,7 @@ env["VISION_API_URL"] = "http://localhost:11434/api/generate"
 env["IPv6_ROOT"] = "http://[2408:8256:4c87:1dce:198d:7e8b:cc03:88aa]:9092"
 env["FEISHU_ACCESS_TOKEN"] = ACCESS_TOKEN
 
-script_dir = "/Users/galw/.openclaw/skills/backstage-video-download-v2/scripts"
+script_dir = "/Users/galw/.agents/skills/backstage-video-download-v2/scripts"
 
 # 视频列表：(日期目录, 原始文件名)
 videos = [

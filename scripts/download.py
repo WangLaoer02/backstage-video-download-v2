@@ -125,22 +125,72 @@ def get_save_dir(date_str, user_code):
     return save_path
 
 class PipelineLock:
-    """Per-user/date lock to prevent duplicate vertical outputs and sequence races."""
-    def __init__(self, date_str, user_code):
+    """Per-user/date lock to prevent duplicate vertical outputs and sequence races.
+
+    实现要点：
+    - 用 fcntl.flock(LOCK_EX|LOCK_NB) + 短轮询 30s 拿锁
+    - 拿锁时写入持锁 PID + 时间戳，超时可诊断是哪个进程卡死
+    - 用 os.open(O_RDWR) 而非 open("a")，避免 macOS 上 TextIOWrapper 包装的 flock 行为差异
+    - 注意：macOS flock 在跨线程场景 advisory 行为不可靠，生产 use case
+      （launchd noon/evening、OpenClaw cron）都是跨进程调起，本类足够。
+    """
+    DEFAULT_TIMEOUT_S = 30
+    POLL_INTERVAL_S = 0.5
+
+    def __init__(self, date_str, user_code, timeout=DEFAULT_TIMEOUT_S):
         self.path = get_save_dir(date_str, user_code) / LOCK_FILENAME
-        self.fp = None
+        self.timeout = timeout
+        self.fd = None
+        self.acquired = False
 
     def __enter__(self):
-        import fcntl
-        self.fp = open(self.path, "a")
-        fcntl.flock(self.fp.fileno(), fcntl.LOCK_EX)
-        return self
+        import fcntl, os, time
+        # 确保 lock 文件存在
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.touch(exist_ok=True)
+        self.fd = os.open(str(self.path), os.O_RDWR)
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.acquired = True
+                # 记录持锁 PID + 时间戳，便于超时诊断
+                try:
+                    os.ftruncate(self.fd, 0)
+                    os.lseek(self.fd, 0, 0)
+                    os.write(self.fd, f"pid={os.getpid()} at={int(time.time())}\n".encode())
+                except Exception:
+                    pass
+                return self
+            except (BlockingIOError, OSError) as e:
+                if time.monotonic() >= deadline:
+                    holder = self._read_holder()
+                    raise TimeoutError(
+                        f"PipelineLock 超时 ({self.timeout}s): {self.path} "
+                        f"仍被持有 (last holder: {holder})"
+                    ) from e
+                time.sleep(self.POLL_INTERVAL_S)
+
+    def _read_holder(self):
+        try:
+            with open(self.path, "r") as f:
+                return f.read().strip()
+        except Exception:
+            return "unknown"
 
     def __exit__(self, exc_type, exc, tb):
         import fcntl
-        if self.fp:
-            fcntl.flock(self.fp.fileno(), fcntl.LOCK_UN)
-            self.fp.close()
+        if self.fd is not None:
+            try:
+                if self.acquired:
+                    fcntl.flock(self.fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                os.close(self.fd)
+            except Exception:
+                pass
+            self.fd = None
         return False
 
 def _state_path(date_str, user_code):
