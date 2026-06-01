@@ -3,7 +3,7 @@
 后台视频下载→改竖 自动化（写表已禁用 v3.1）
 移除多用户/复杂规则 - 保留核心三环节
 """
-import json, sys, os, re, requests, subprocess, tempfile, shutil, time, random, uuid
+import json, sys, os, re, requests, subprocess, tempfile, shutil, time, random, uuid, difflib
 from pathlib import Path
 from urllib.parse import quote
 from datetime import datetime
@@ -23,7 +23,82 @@ HANDLER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "handl
 EXPECTED_VERTICAL_DIMS = (720, 1280)
 STATE_FILENAME = ".backstage_pipeline_state.json"
 LOCK_FILENAME = ".backstage_pipeline.lock"
+IMAGE_EXTENSIONS = ("jpg", "png", "jpeg", "webp")
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+ROLE_PROFILES = [
+    {"subdir": "naruto", "canonical": "宇智波鼬", "aliases": ["宇智波鼬", "鼬", "鼬神", "itachi", "Itachi"], "asset_keywords": ["宇智波鼬", "鼬"]},
+    {"subdir": "naruto", "canonical": "宇智波斑", "aliases": ["宇智波斑", "斑", "madara", "Madara"], "asset_keywords": ["宇智波斑", "斑"]},
+    {"subdir": "naruto", "canonical": "宇智波佐助", "aliases": ["宇智波佐助", "佐助", "sasuke", "Sasuke"], "asset_keywords": ["宇智波佐助", "佐助"]},
+    {"subdir": "naruto", "canonical": "漩涡鸣人", "aliases": ["漩涡鸣人", "鸣人", "金鸣", "naruto", "Naruto"], "asset_keywords": ["漩涡鸣人", "鸣人", "金鸣"]},
+    {"subdir": "naruto", "canonical": "波风水门", "aliases": ["波风水门", "水门", "四代", "四代火影"], "asset_keywords": ["波风水门", "水门"]},
+    {"subdir": "naruto", "canonical": "纲手", "aliases": ["纲手"], "asset_keywords": ["纲手"]},
+    {"subdir": "naruto", "canonical": "千手柱间", "aliases": ["千手柱间", "柱间", "初代", "初代火影"], "asset_keywords": ["千手柱间", "柱间"]},
+    {"subdir": "naruto", "canonical": "自来也", "aliases": ["自来也"], "asset_keywords": ["自来也"]},
+    {"subdir": "naruto", "canonical": "佩恩", "aliases": ["佩恩", "长门"], "asset_keywords": ["佩恩"]},
+    {"subdir": "naruto", "canonical": "夜凯", "aliases": ["夜凯", "死门凯"], "asset_keywords": ["夜凯"]},
+    {"subdir": "naruto", "canonical": "春野樱", "aliases": ["春野樱", "小樱", "樱"], "asset_keywords": ["春野樱", "小樱"]},
+    {"subdir": "naruto", "canonical": "日向雏田", "aliases": ["日向雏田", "雏田"], "asset_keywords": ["日向雏田", "雏田"]},
+    {"subdir": "naruto", "canonical": "旗木卡卡西", "aliases": ["旗木卡卡西", "卡卡西"], "asset_keywords": ["旗木卡卡西", "卡卡西"]},
+    {"subdir": "naruto", "canonical": "迈特凯", "aliases": ["迈特凯", "凯"], "asset_keywords": ["迈特凯", "凯"]},
+    {"subdir": "naruto", "canonical": "宇智波带土", "aliases": ["宇智波带土", "带土"], "asset_keywords": ["宇智波带土", "带土"]},
+    {"subdir": "naruto", "canonical": "大蛇丸", "aliases": ["大蛇丸"], "asset_keywords": ["大蛇丸"]},
+    {"subdir": "naruto", "canonical": "小南", "aliases": ["小南"], "asset_keywords": ["小南"]},
+    {"subdir": "naruto", "canonical": "迪达拉", "aliases": ["迪达拉"], "asset_keywords": ["迪达拉"]},
+    {"subdir": "naruto", "canonical": "飞段", "aliases": ["飞段"], "asset_keywords": ["飞段"]},
+    {"subdir": "naruto", "canonical": "香燐", "aliases": ["香燐", "香磷"], "asset_keywords": ["香燐", "香磷"]},
+    {"subdir": "naruto", "canonical": "天天", "aliases": ["天天"], "asset_keywords": ["天天"]},
+    {"subdir": "naruto", "canonical": "玖辛奈", "aliases": ["玖辛奈"], "asset_keywords": ["玖辛奈"]},
+    {"subdir": "jujutsu", "canonical": "五条悟", "aliases": ["五条悟", "五条"], "asset_keywords": ["五条悟", "五条"]},
+    {"subdir": "jujutsu", "canonical": "宿傩", "aliases": ["宿傩", "两面宿傩"], "asset_keywords": ["宿傩"]},
+    {"subdir": "jujutsu", "canonical": "虎杖悠仁", "aliases": ["虎杖悠仁", "虎杖"], "asset_keywords": ["虎杖悠仁", "虎杖"]},
+    {"subdir": "jujutsu", "canonical": "伏黑甚尔", "aliases": ["伏黑甚尔", "甚尔"], "asset_keywords": ["伏黑甚尔", "甚尔"]},
+    {"subdir": "jujutsu", "canonical": "伏黑惠", "aliases": ["伏黑惠"], "asset_keywords": ["伏黑惠"]},
+    {"subdir": "jujutsu", "canonical": "乙骨忧太", "aliases": ["乙骨忧太", "乙骨"], "asset_keywords": ["乙骨忧太", "乙骨"]},
+    {"subdir": "jujutsu", "canonical": "真人", "aliases": ["真人"], "asset_keywords": ["真人"]},
+    {"subdir": "jujutsu", "canonical": "东堂葵", "aliases": ["东堂葵", "东堂"], "asset_keywords": ["东堂葵", "东堂"]},
+    {"subdir": "jujutsu", "canonical": "夏油杰", "aliases": ["夏油杰", "夏油"], "asset_keywords": ["夏油杰", "夏油"]},
+    {"subdir": "jujutsu", "canonical": "七海建人", "aliases": ["七海建人", "七海"], "asset_keywords": ["七海建人", "七海"]},
+    {"subdir": "jujutsu", "canonical": "禅院真希", "aliases": ["禅院真希", "真希", "禅院"], "asset_keywords": ["禅院真希", "真希", "禅院"]},
+    {"subdir": "jujutsu", "canonical": "冥冥", "aliases": ["冥冥"], "asset_keywords": ["冥冥"]},
+    {"subdir": "jujutsu", "canonical": "秤金次", "aliases": ["秤金次", "秤"], "asset_keywords": ["秤金次", "秤"]},
+    {"subdir": "jujutsu", "canonical": "胀相", "aliases": ["胀相"], "asset_keywords": ["胀相"]},
+    {"subdir": "kimetsu", "canonical": "灶门炭治郎", "aliases": ["灶门炭治郎", "炭治郎"], "asset_keywords": ["灶门炭治郎", "炭治郎"]},
+    {"subdir": "kimetsu", "canonical": "灶门祢豆子", "aliases": ["灶门祢豆子", "祢豆子"], "asset_keywords": ["灶门祢豆子", "祢豆子"]},
+    {"subdir": "kimetsu", "canonical": "我妻善逸", "aliases": ["我妻善逸", "善逸"], "asset_keywords": ["我妻善逸", "善逸"]},
+    {"subdir": "kimetsu", "canonical": "蝴蝶忍", "aliases": ["蝴蝶忍", "蝴蝶"], "asset_keywords": ["蝴蝶忍", "蝴蝶"]},
+    {"subdir": "kimetsu", "canonical": "甘露寺蜜璃", "aliases": ["甘露寺蜜璃", "甘露寺", "蜜璃"], "asset_keywords": ["甘露寺蜜璃", "甘露寺", "蜜璃"]},
+    {"subdir": "kimetsu", "canonical": "富冈义勇", "aliases": ["富冈义勇", "富冈", "义勇"], "asset_keywords": ["富冈义勇", "义勇"]},
+    {"subdir": "kimetsu", "canonical": "炼狱杏寿郎", "aliases": ["炼狱杏寿郎", "炼狱", "杏寿郎"], "asset_keywords": ["炼狱杏寿郎", "炼狱", "杏寿郎"]},
+    {"subdir": "kimetsu", "canonical": "猗窝座", "aliases": ["猗窝座"], "asset_keywords": ["猗窝座"]},
+    {"subdir": "kimetsu", "canonical": "岩柱", "aliases": ["岩柱", "悲鸣", "行冥"], "asset_keywords": ["岩柱", "悲鸣", "行冥"]},
+    {"subdir": "kimetsu", "canonical": "黑死牟", "aliases": ["黑死牟"], "asset_keywords": ["黑死牟"]},
+    {"subdir": "kimetsu", "canonical": "继国缘一", "aliases": ["继国缘一", "缘一"], "asset_keywords": ["继国缘一", "缘一"]},
+]
+
+ROLE_MISREADS = {
+    "鼫": "宇智波鼬",
+    "鼬人": "宇智波鼬",
+    "鹤人": "漩涡鸣人",
+    "鶴人": "漩涡鸣人",
+    "呜人": "漩涡鸣人",
+    "嗚人": "漩涡鸣人",
+    "鸣入": "漩涡鸣人",
+    "鳴人": "漩涡鸣人",
+    "名人": "漩涡鸣人",
+}
+
+FAMILY_HINTS = {
+    "naruto": ["火影", "忍者", "晓组织", "九尾", "查克拉", "佐助", "鸣人", "鼬", "小樱", "雏田", "洗髓"],
+    "jujutsu": ["咒术", "咒回", "领域", "五条", "宿傩", "虎杖", "伏黑", "乙骨"],
+    "kimetsu": ["鬼灭", "呼吸", "炭治郎", "祢豆子", "善逸", "蝴蝶", "炼狱"],
+}
+
+FAMILY_DEFAULTS = {
+    "naruto": ["宇智波鼬", "漩涡鸣人", "宇智波佐助", "春野樱", "日向雏田"],
+    "jujutsu": ["五条悟", "宿傩", "虎杖悠仁", "伏黑甚尔", "乙骨忧太"],
+    "kimetsu": ["灶门炭治郎", "灶门祢豆子", "我妻善逸", "蝴蝶忍", "炼狱杏寿郎"],
+}
 
 def get_date_subdir(date_str):
     """按日期创建子目录：2026-04-21"""
@@ -152,6 +227,173 @@ def build_ipv6_link(parsed, final_name):
     date_folder = f"20{date_str[0:2]}-{date_str[2:4]}-{date_str[4:6]}"
     return f"{IPv6_ROOT}/{parsed['user_code']}/后台下载/{date_folder}/{final_name}"
 
+def _iter_role_profiles(subdir=None):
+    for profile in ROLE_PROFILES:
+        if subdir and profile["subdir"] != subdir:
+            continue
+        yield profile
+
+def _profile_by_canonical(canonical):
+    for profile in ROLE_PROFILES:
+        if profile["canonical"] == canonical:
+            return profile
+    return None
+
+def _role_prompt_candidates():
+    grouped = {}
+    for profile in ROLE_PROFILES:
+        grouped.setdefault(profile["subdir"], []).append(profile["canonical"])
+    labels = {
+        "naruto": "火影忍者",
+        "jujutsu": "咒术回战",
+        "kimetsu": "鬼灭之刃",
+    }
+    parts = []
+    for key in ["naruto", "jujutsu", "kimetsu"]:
+        values = " / ".join(dict.fromkeys(grouped.get(key, [])))
+        parts.append(f"{labels[key]}（{values}）")
+    return "，".join(parts)
+
+def _normalize_role_text(text):
+    if not text:
+        return ""
+    text = str(text).strip()
+    text = re.sub(r'[\s"\'“”‘’《》【】\[\]{}（）(),，。:：;；|/\\]+', '', text)
+    return text
+
+def _infer_family_hint(*texts):
+    joined = " ".join(t for t in texts if t)
+    scores = {}
+    for family, hints in FAMILY_HINTS.items():
+        score = sum(1 for hint in hints if hint in joined)
+        if score:
+            scores[family] = score
+    if not scores:
+        return None
+    return max(scores.items(), key=lambda item: item[1])[0]
+
+def _find_role_asset(profile):
+    if not profile:
+        return None
+    subdir = profile["subdir"]
+    base = Path(ASSETS_DIR) / subdir
+    keywords = profile.get("asset_keywords") or [profile["canonical"]]
+    for keyword in keywords:
+        candidates = []
+        for ext in IMAGE_EXTENSIONS:
+            if base.exists():
+                candidates.extend(base.glob(f"*{keyword}*.{ext}"))
+        if candidates:
+            return str(random.choice(candidates))
+    for keyword in keywords:
+        candidates = []
+        for ext in IMAGE_EXTENSIONS:
+            candidates.extend(Path(ASSETS_DIR).rglob(f"*{keyword}*.{ext}"))
+        if candidates:
+            return str(random.choice(candidates))
+    return None
+
+def _match_role_from_text(text, preferred_family=None, allow_fuzzy=False):
+    normalized = _normalize_role_text(text)
+    if not normalized:
+        return None
+
+    candidates = []
+    for profile in ROLE_PROFILES:
+        if preferred_family and profile["subdir"] != preferred_family:
+            continue
+        for alias in profile["aliases"]:
+            alias_norm = _normalize_role_text(alias)
+            if not alias_norm:
+                continue
+            idx = normalized.find(alias_norm)
+            if idx >= 0:
+                candidates.append((idx, -len(alias_norm), profile))
+
+    if candidates:
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return candidates[0][2]
+
+    for wrong, canonical in ROLE_MISREADS.items():
+        if wrong in normalized:
+            profile = _profile_by_canonical(canonical)
+            if profile and (not preferred_family or profile["subdir"] == preferred_family):
+                return profile
+
+    if not allow_fuzzy:
+        return None
+
+    choices = []
+    for profile in ROLE_PROFILES:
+        if preferred_family and profile["subdir"] != preferred_family:
+            continue
+        for alias in profile["aliases"]:
+            alias_norm = _normalize_role_text(alias)
+            if len(alias_norm) >= 2:
+                choices.append((alias_norm, profile))
+    best = None
+    for alias, profile in choices:
+        ratio = difflib.SequenceMatcher(None, normalized, alias).ratio()
+        # 只接受非常接近的短词纠错，避免把未知角色硬贴到错误 IP。
+        threshold = 0.67 if max(len(normalized), len(alias)) <= 3 else 0.78
+        if ratio >= threshold and (best is None or ratio > best[0]):
+            best = (ratio, profile)
+    return best[1] if best else None
+
+def _select_role_asset_from_text(text, preferred_family=None, allow_fuzzy=False):
+    profile = _match_role_from_text(text, preferred_family=preferred_family, allow_fuzzy=allow_fuzzy)
+    path = _find_role_asset(profile)
+    if path:
+        return path, profile
+    return None, profile
+
+def _select_family_default_asset(family):
+    for canonical in FAMILY_DEFAULTS.get(family, []):
+        profile = _profile_by_canonical(canonical)
+        path = _find_role_asset(profile)
+        if path:
+            return path, profile
+    return None, None
+
+def _correct_role_with_llm(raw_text, filename="", preferred_family=None):
+    """Use a local language model as a conservative role normalizer when available."""
+    raw = _normalize_role_text(raw_text)
+    if not raw:
+        return None
+
+    local_match = _match_role_from_text(raw, preferred_family=preferred_family, allow_fuzzy=True)
+    if local_match:
+        return local_match["canonical"]
+
+    try:
+        candidates = [
+            p["canonical"] for p in _iter_role_profiles(preferred_family)
+            if _find_role_asset(p)
+        ]
+        if not candidates:
+            return None
+        prompt = (
+            "你是动漫角色名纠错器。只从候选列表中选择最可能的一个角色名，"
+            "不要解释；如果完全无法判断，只返回未知。\n"
+            f"视频文件名：{filename or '未知'}\n"
+            f"AI原始识别：{raw_text}\n"
+            f"候选：{'、'.join(candidates)}\n"
+            "特别注意：鼫通常是宇智波鼬的误识别，鹤人/呜人通常是漩涡鸣人的误识别。"
+        )
+        resp = requests.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "qwen2.5:7b", "prompt": prompt, "stream": False},
+            timeout=20
+        )
+        if resp.status_code == 200:
+            text = (resp.json().get("response") or "").strip()
+            profile = _match_role_from_text(text, preferred_family=preferred_family, allow_fuzzy=True)
+            if profile:
+                return profile["canonical"]
+    except Exception as e:
+        print(json.dumps({"warning": f"角色名纠错 LLM 不可用: {e}"}), file=sys.stderr)
+    return None
+
 def _call_vision_api(frame_path):
     """从视频关键帧调用 MiniMax Vision API 识别 IP 角色（通过 mmx CLI）"""
     import subprocess, os, json
@@ -208,32 +450,20 @@ def _call_vision_api_v2(frame_path):
 
     prompt = (
         "识别这个图片中最显著的动漫角色名称，只返回角色名，不要解释。"
-        "候选：火影忍者（鸣人/鼬/斑/佐助/小樱/雏田/卡卡西/佩恩），"
-        "咒术回战（五条/宿傩/虎杖/伏黑/乙骨/真人/东堂），"
-        "鬼灭之刃（炭治郎/祢豆子/善逸/蝴蝶/甘露寺/义勇/杏寿郎）。"
+        f"候选：{_role_prompt_candidates()}。"
+        "如果看到相近但不确定的短词，优先纠正常见角色名，例如鼫=宇智波鼬、鹤人/呜人=漩涡鸣人。"
         "找不到时只返回'未知'。"
     )
 
     def _extract(content):
-        if not content or content in ("未知","无法识别","无"):
-            return content if content else None
-        # 完整角色关键词（从贴图库提取）
-        chars = [
-            "宇智波鼬","宇智波斑","宇智波佐助","漩涡鸣人","千手柱间","佩恩","纲手","自来也",
-            "夜凯","旗木卡卡西","春野樱","日向雏田","迈特凯","宇智波带土",
-            "五条悟","宿傩","虎杖悠仁","伏黑甚尔","伏黑惠","乙骨忧太","真人","东堂葵",
-            "灶门炭治郎","灶门祢豆子","我妻善逸","蝴蝶忍","甘露寺蜜璃","富冈义勇",
-            "炼狱杏寿郎","猗窝座","岩柱","黑死牟","继国缘一",
-            # 别名+单字匹配
-            "鼬","斑","佐助","鸣人","水门","柱间","纲手","小樱","凯","带土",
-            "五条","宿傩","虎杖","伏黑","乙骨","真人","东堂",
-            "炭治郎","祢豆子","善逸","蝴蝶","甘露寺","义勇","杏寿郎","猗窝座",
-            "行冥","岩柱","悲鸣","大蛇丸","小南","迪达拉","飞段","香燐","自来也",
-        ]
-        for c in chars:
-            if c in content:
-                return c
-        return None
+        cleaned = _normalize_role_text(content)
+        if not cleaned or cleaned in ("未知", "无法识别", "无", "不知道"):
+            return None
+        profile = _match_role_from_text(cleaned, allow_fuzzy=True)
+        if profile:
+            return profile["canonical"]
+        # 保留原始短词，后续交给语言模型纠错，不要在 Vision 阶段直接丢弃。
+        return cleaned[:80]
 
     # 1. MiniMax mmx
     try:
@@ -246,7 +476,7 @@ def _call_vision_api_v2(frame_path):
             d = json.loads(r.stdout)
             txt = (d.get("content") or "").strip()
             role = _extract(txt)
-            if role and role not in ("未知","无法识别","无"):
+            if role:
                 return role
             # MiniMax未命中或返回未知 → 继续Ollama
     except Exception:
@@ -275,100 +505,72 @@ def _call_vision_api_v2(frame_path):
 
 def find_cover_image(filename="", video_path=None):
     """
-    贴图匹配（与 SKILL.md v2.0.0 一致）：
-    1. Kimetsu 关键词 → assets/kimetsu/
-    2. Jujutsu 关键词 → assets/jujutsu/
-    3. Naruto 关键词 → assets/naruto/
-    4. 【新增】Vision API 识别（关键词无命中时）→ AI 抽帧识别 IP
-    5. 兜底 → assets/fallback/ 通用贴图（标记待确认）
+    贴图匹配：
+    1. 文件名角色关键词（按最早出现位置，不按字典顺序）
+    2. Vision API 识别 → 错词表/模糊匹配/本地 LLM 纠错
+    3. IP 家族默认角色贴图（仍优先专属贴图，避免通用 fallback）
+    4. 最后才使用 fallback 通用贴图并标记待确认
 
     Returns:
         tuple: (贴图路径, 是否为兜底) — 有结果时
         None: 完全无法匹配
     """
-    import glob
+    preferred_family = _infer_family_hint(filename)
 
-    kimetsu_map = {
-        "义勇": "富冈义勇", "富冈": "富冈义勇", "炭治郎": "灶门炭治郎",
-        "善逸": "我妻善逸", "祢豆子": "灶门祢豆子", "蜜璃": "甘露寺蜜璃",
-        "甘露寺": "甘露寺蜜璃", "蝴蝶": "蝴蝶忍", "蝴蝶忍": "蝴蝶忍",
-        "岩柱": "岩柱", "悲鸣": "岩柱", "行冥": "岩柱",
-        "炼狱": "炼狱杏寿郎", "杏寿郎": "炼狱杏寿郎",
-        "黑死牟": "黑死牟",
-    }
-    jujutsu_map = {
-        "甚尔": "伏黑甚尔", "伏黑": "伏黑甚尔", "宿傩": "宿傩",
-        "五条悟": "五条悟", "五条": "五条悟", "虎杖": "虎杖悠仁", "七海": "七海",
-        "东堂": "东堂葵", "禅院": "禅院", "真人": "真人",
-        "夏油": "夏油杰", "乙骨": "乙骨",
-    }
-    naruto_map = {
-        "鼬": "宇智波鼬", "斑": "宇智波斑", "佐助": "宇智波佐助",
-        "鸣人": "漩涡鸣人", "水门": "波风水门", "纲手": "纲手",
-        "柱间": "千手柱间", "初代": "千手柱间", "初代火影": "千手柱间", "自来也": "自来也", "佩恩": "佩恩",
-        "夜凯": "夜凯", "小樱": "春野樱",
-        "卡卡西": "旗木卡卡西", "凯": "迈特凯",
-    }
-
-    def search_ip(ip_keyword_map, subdir):
-        for kw, char in ip_keyword_map.items():
-            if kw in filename:
-                for ext in ["jpg", "png", "jpeg", "webp"]:
-                    dir_path = Path(ASSETS_DIR) / subdir
-                    paths = list(dir_path.glob(f"*{char}*.{ext}"))
-                    if paths:
-                        return str(random.choice(paths))
-                    # 模糊：只要文件名包含该词就行
-                    all_paths = list(Path(ASSETS_DIR).rglob(f"*{char}*.{ext}"))
-                    if all_paths:
-                        return str(random.choice(all_paths))
-        return None
-
-    # 1. 鬼灭
-    result = search_ip(kimetsu_map, "kimetsu")
+    result, profile = _select_role_asset_from_text(filename, preferred_family=preferred_family, allow_fuzzy=False)
     if result:
-        return result, False
-    # 2. 咒术
-    result = search_ip(jujutsu_map, "jujutsu")
-    if result:
-        return result, False
-    # 3. 火影
-    result = search_ip(naruto_map, "naruto")
-    if result:
+        print(json.dumps({
+            "info": f"文件名匹配贴图: {profile['canonical']}",
+            "cover": result
+        }, ensure_ascii=False), file=sys.stderr)
         return result, False
 
-    # 4. 【新增】AI 抽帧识别：关键词无命中 → 提取关键帧 → Vision API
-    print(json.dumps({"info": f"关键词未匹配 '{filename}'，启动 AI 角色识别..."}), file=sys.stderr)
+    print(json.dumps({"info": f"文件名未匹配 '{filename}'，启动 AI 角色识别..."}), file=sys.stderr)
     frame_path = _extract_key_frame(video_path) if video_path else None
     if frame_path:
         ai_result = _call_vision_api_v2(frame_path)
         if ai_result:
             print(json.dumps({"info": f"AI 识别结果: {ai_result}"}), file=sys.stderr)
-            # P2: 双向模糊匹配 — 把 AI 返回的词当作关键词，在所有候选角色名中找交集
-            all_chars = {**naruto_map, **jujutsu_map, **kimetsu_map}
-            found_path = None
-            for kw, char in all_chars.items():
-                # kw 命中 AI 结果，或者 AI 结果里有 kw 的任意一个字
-                if kw in ai_result or char in ai_result or any(c in ai_result for c in kw):
-                    for subdir in ["naruto", "jujutsu", "kimetsu"]:
-                        dir_path = Path(ASSETS_DIR) / subdir
-                        for ext in ["jpg", "png", "jpeg", "webp"]:
-                            candidates = list(dir_path.glob(f"*{char}*.{ext}"))
-                            if candidates:
-                                return str(random.choice(candidates)), False
-                            all_cands = list(Path(ASSETS_DIR).rglob(f"*{char}*.{ext}"))
-                            if all_cands:
-                                return str(random.choice(all_cands)), False
+            family = preferred_family or _infer_family_hint(filename, ai_result)
+            result, profile = _select_role_asset_from_text(ai_result, preferred_family=family, allow_fuzzy=True)
+            if result:
+                print(json.dumps({
+                    "info": f"AI 结果已匹配贴图: {profile['canonical']}",
+                    "cover": result
+                }, ensure_ascii=False), file=sys.stderr)
+                return result, False
+
+            corrected = _correct_role_with_llm(ai_result, filename=filename, preferred_family=family)
+            if corrected:
+                profile = _profile_by_canonical(corrected)
+                result = _find_role_asset(profile)
+                if result:
+                    print(json.dumps({
+                        "info": f"AI 结果已纠错为: {corrected}",
+                        "raw": ai_result,
+                        "cover": result
+                    }, ensure_ascii=False), file=sys.stderr)
+                    return result, False
         try:
             os.remove(frame_path)
         except:
             pass
 
-    # 兜底：专用 fallback 目录通用贴图
+    # 如果能判断 IP 家族，但具体角色没识别出来，优先使用该 IP 的高覆盖角色贴图。
+    if preferred_family:
+        result, profile = _select_family_default_asset(preferred_family)
+        if result:
+            print(json.dumps({
+                "warning": f"未识别具体角色，使用 {preferred_family} 专属默认贴图: {profile['canonical']}",
+                "cover": result
+            }, ensure_ascii=False), file=sys.stderr)
+            return result, True
+
+    # 最后才兜底：专用 fallback 目录通用贴图
     fallback_dir = Path(ASSETS_DIR) / "fallback"
     if fallback_dir.exists():
         imgs = []
-        for ext in ["jpg", "png", "jpeg", "webp"]:
+        for ext in IMAGE_EXTENSIONS:
             imgs.extend(fallback_dir.glob(f"*.{ext}"))
         if imgs:
             return str(random.choice(imgs)), True   # (path, is_fallback=True → 写表时标记待确认)
