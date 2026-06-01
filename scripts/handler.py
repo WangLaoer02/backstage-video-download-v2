@@ -14,11 +14,11 @@
 """
 
 import argparse
+import json
 import sys
 import os
 import subprocess
 import logging
-from pathlib import Path
 from typing import Tuple, Optional
 
 # 配置日志
@@ -69,6 +69,22 @@ def get_video_duration(video_path: str) -> Optional[float]:
         logger.error(f"获取视频时长失败: {e}")
     return None
 
+def get_video_dimensions(video_path: str) -> Optional[Tuple[int, int]]:
+    """读取首个视频流的编码尺寸。"""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+             '-show_entries', 'stream=width,height', '-of', 'csv=s=x:p=0',
+             video_path],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            width, height = result.stdout.strip().split("x", 1)
+            return int(width), int(height)
+    except Exception as e:
+        logger.error(f"获取视频尺寸失败: {e}")
+    return None
+
 def process_vertical(input_path: str, image_path: str, output_path: str, preset: str = "medium") -> Tuple[bool, str]:
     """
     改竖处理
@@ -107,28 +123,22 @@ def process_vertical(input_path: str, image_path: str, output_path: str, preset:
     if duration is None:
         return False, "无法获取视频时长"
 
-    # 构建 FFmpeg 命令
-    # 策略：将贴图作为底层，上下各铺 437px
-    # 视频缩放到 720x406，居中叠放
-
     ffmpeg_cmd = [
         'ffmpeg', '-y',
         '-i', input_path,
-        '-i', image_path,
-        '-i', image_path,  # 同一张贴图用两次（上下）
+        '-loop', '1', '-framerate', '30', '-i', image_path,
         '-filter_complex', (
-            # 创建 1280x720 黑色背景
             f"color=black:{VERTICAL_WIDTH}x{VERTICAL_HEIGHT}:d={duration} [bg];"
-            # 贴图缩放到 720x437（上层）
-            f"[1] scale={VERTICAL_WIDTH}:{COVER_HEIGHT} [cover_top];"
-            # 视频缩放到 720x406（中层）
-            f"[0] scale={VERTICAL_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=decrease [video_scaled];"
-            # 贴图缩放到 720x437（下层）
-            f"[2] scale={VERTICAL_WIDTH}:{COVER_HEIGHT} [cover_bottom];"
-            # 叠放：黑色背景 + 上层贴图 + 中层视频 + 下层贴图
-            f"[bg] [cover_top] overlay=0:0 [v1];"
-            f"[v1] [video_scaled] overlay=0:{COVER_HEIGHT} [v2];"
-            f"[v2] [cover_bottom] overlay=0:{COVER_HEIGHT + VIDEO_HEIGHT} [out]"
+            f"[1:v] scale={VERTICAL_WIDTH}:{COVER_HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={VERTICAL_WIDTH}:{COVER_HEIGHT},setsar=1,format=rgba [cover];"
+            f"[cover] split=2 [cover_top][cover_bottom];"
+            f"[0:v] scale={VERTICAL_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=decrease,"
+            f"pad={VERTICAL_WIDTH}:{VIDEO_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,"
+            f"setsar=1,format=rgba [video_scaled];"
+            f"[bg][cover_top] overlay=0:0:shortest=0 [v1];"
+            f"[v1][video_scaled] overlay=0:{COVER_HEIGHT}:shortest=0 [v2];"
+            f"[v2][cover_bottom] overlay=0:{COVER_HEIGHT + VIDEO_HEIGHT}:shortest=0,"
+            f"format=yuv420p,setsar=1 [out]"
         ),
         '-map', '[out]',
         '-map', '0:a:0?',  # 保留音频
@@ -143,8 +153,11 @@ def process_vertical(input_path: str, image_path: str, output_path: str, preset:
         logger.warning(f"未知预设 {preset}，使用默认值")
         ffmpeg_cmd.extend(PRESETS["medium"].split())
 
-    # 音频编码
-    ffmpeg_cmd.extend(['-c:a', 'aac', '-b:a', '128k'])
+    ffmpeg_cmd.extend([
+        '-c:a', 'aac', '-b:a', '128k',
+        '-movflags', '+faststart',
+        '-t', f"{duration:.3f}"
+    ])
 
     # 输出文件
     ffmpeg_cmd.append(output_path)
@@ -160,6 +173,9 @@ def process_vertical(input_path: str, image_path: str, output_path: str, preset:
         )
 
         if result.returncode == 0:
+            dims = get_video_dimensions(output_path)
+            if dims != (VERTICAL_WIDTH, VERTICAL_HEIGHT):
+                return False, f"输出尺寸异常: {dims}, 期望 {VERTICAL_WIDTH}x{VERTICAL_HEIGHT}"
             logger.info(f"✅ 改竖成功: {output_path}")
             return True, "改竖成功"
         else:
