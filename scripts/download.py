@@ -692,10 +692,15 @@ def _is_valid_completed_output(path):
     return is_vertical_video(str(path))
 
 def _find_existing_vertical(video_name, parsed, source_path=None):
+    """查找同一 source 已生成的合规改竖成品。
+
+    选接策略：seq 跟 video_name 序号最接近的（处理旧版序号错位遗留的多个 match）。
+    """
     save_dir = get_save_dir(parsed["date"], parsed["user_code"])
     prefix = f"{parsed['date']}{parsed['user_code']}"
     suffix_part = f"-{parsed['suffix']}" if parsed["suffix"] else ""
     suffix = f"-龙虾改竖{parsed['content']}{suffix_part}.mp4"
+    target_seq = parsed["seq"]
     matches = []
     for path in save_dir.glob(f"{prefix}*-龙虾改竖*.mp4"):
         if path.name.endswith(suffix) and _is_valid_completed_output(path):
@@ -704,9 +709,11 @@ def _find_existing_vertical(video_name, parsed, source_path=None):
             seq_match = re.match(rf'^{parsed["date"]}{parsed["user_code"]}(\d+)-', path.name)
             seq = int(seq_match.group(1)) if seq_match else 0
             matches.append((seq, path))
-    if len(matches) == 1:
-        return str(matches[0][1])
-    return None
+    if not matches:
+        return None
+    # 选 seq 最接近 target_seq 的（处理旧版序号错位遗留）
+    matches.sort(key=lambda x: (abs(x[0] - target_seq), x[0]))
+    return str(matches[0][1])
 
 def process_vertical(video_path, cover_image):
     if not cover_image:
