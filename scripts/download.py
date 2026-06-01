@@ -242,12 +242,16 @@ def get_date_dir(date_str):
     """返回 YYYY-MM-DD 格式的日期目录名"""
     return get_date_subdir(date_str)
 
-def get_next_seq(date, user_code):
+def get_next_seq(date, user_code, source_seq=None):
     """扫描日期目录，找到相同用户代码的最大序号，返回下一个序号。
 
-    扫描范围：SAVE_DIR/YYYY-MM-DD/ 下所有 mp4（原始+成品）
-    跳过含 "vertical_" 的临时文件。
+    参数:
+        date: 26MMDD
+        user_code: 用户代码
+        source_seq: 如果传了，优先用 source_seq 作为新改竖成品的 seq（同名同 seq 原则）
     """
+    if source_seq is not None:
+        return source_seq
     max_seq = 0
     save_dir = get_save_dir(date, user_code)
     if not save_dir.exists():
@@ -1155,7 +1159,7 @@ def full_pipeline(video_name):
         if not is_vertical_video(output_path):
             return {"success": False, "error": f"改竖成品尺寸异常: {get_video_dimensions(output_path)}"}
 
-        next_seq = get_next_seq(parsed["date"], parsed["user_code"])
+        next_seq = get_next_seq(parsed["date"], parsed["user_code"], source_seq=parsed["seq"])
         save_dir = get_save_dir(parsed["date"], parsed["user_code"])
         while True:
             final_name = build_filename(parsed["date"], parsed["user_code"], next_seq, parsed["content"], parsed["suffix"])
