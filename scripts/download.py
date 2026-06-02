@@ -26,6 +26,71 @@ LOCK_FILENAME = ".backstage_pipeline.lock"
 IMAGE_EXTENSIONS = ("jpg", "png", "jpeg", "webp")
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
+def _env_int(name, default):
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+DOWNLOAD_CHUNK_SIZE = _env_int("BACKSTAGE_DOWNLOAD_CHUNK_SIZE", 1024 * 1024)
+DOWNLOAD_CONNECT_TIMEOUT_S = _env_int("BACKSTAGE_DOWNLOAD_CONNECT_TIMEOUT", 10)
+DOWNLOAD_READ_TIMEOUT_S = _env_int("BACKSTAGE_DOWNLOAD_READ_TIMEOUT", 30)
+DOWNLOAD_TOTAL_TIMEOUT_S = _env_int("BACKSTAGE_DOWNLOAD_TOTAL_TIMEOUT", 900)
+DOWNLOAD_MIN_RATE_BPS = _env_int("BACKSTAGE_DOWNLOAD_MIN_RATE_BPS", 32 * 1024)
+DOWNLOAD_MIN_RATE_AFTER_S = _env_int("BACKSTAGE_DOWNLOAD_MIN_RATE_AFTER", 120)
+DOWNLOAD_PROGRESS_INTERVAL_S = _env_int("BACKSTAGE_DOWNLOAD_PROGRESS_INTERVAL", 20)
+DOWNLOAD_PROGRESS_BYTES = _env_int("BACKSTAGE_DOWNLOAD_PROGRESS_BYTES", 10 * 1024 * 1024)
+DOWNLOAD_RETRIES = _env_int("BACKSTAGE_DOWNLOAD_RETRIES", 2)
+DOWNLOAD_PART_MAX_AGE_S = _env_int("BACKSTAGE_DOWNLOAD_PART_MAX_AGE", 3600)
+MEDIA_USE_ENV_PROXY = os.getenv("BACKSTAGE_USE_PROXY", "0").lower() in ("1", "true", "yes")
+
+def _log_event(event, **fields):
+    payload = {"event": event, "ts": datetime.now().isoformat(timespec="seconds")}
+    payload.update(fields)
+    print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
+
+def _new_media_session():
+    """Media/API requests bypass env proxy by default; local proxy made large files very slow."""
+    session = requests.Session()
+    session.trust_env = MEDIA_USE_ENV_PROXY
+    return session
+
+def _cleanup_stale_download_parts(local_path):
+    cutoff = time.time() - DOWNLOAD_PART_MAX_AGE_S
+    for part_path in local_path.parent.glob(f"{local_path.name}.*.part"):
+        try:
+            if part_path.stat().st_mtime >= cutoff:
+                continue
+            part_path.unlink()
+            _log_event("download_stale_part_removed", path=str(part_path))
+        except Exception as e:
+            _log_event("download_stale_part_remove_failed", path=str(part_path), error=str(e))
+
+def _reuse_existing_download(local_path, video_name):
+    if not local_path.exists():
+        return None
+    ok, msg = _validate_video_file(str(local_path))
+    if ok:
+        _log_event(
+            "download_reuse_existing",
+            name=video_name,
+            path=str(local_path),
+            mb=round(local_path.stat().st_size / 1024 / 1024, 1),
+        )
+        return True, f"已存在({local_path.stat().st_size//1024//1024}MB)", str(local_path)
+    _log_event(
+        "download_invalid_existing_removed",
+        name=video_name,
+        path=str(local_path),
+        reason=msg,
+        bytes=local_path.stat().st_size,
+    )
+    try:
+        local_path.unlink()
+    except Exception as e:
+        return False, f"已有文件异常且无法删除: {msg}; {e}", None
+    return None
+
 ROLE_PROFILES = [
     {"subdir": "naruto", "canonical": "宇智波鼬", "aliases": ["宇智波鼬", "鼬", "鼬神", "itachi", "Itachi"], "asset_keywords": ["宇智波鼬", "鼬"]},
     {"subdir": "naruto", "canonical": "宇智波斑", "aliases": ["宇智波斑", "斑", "madara", "Madara"], "asset_keywords": ["宇智波斑", "斑"]},
@@ -761,7 +826,7 @@ def search_videos(prefix):
     encoded = quote(prefix, safe='')
     url = f"{API_BASE}?name={encoded}"
     try:
-        resp = requests.get(url, timeout=10)
+        resp = _new_media_session().get(url, timeout=(DOWNLOAD_CONNECT_TIMEOUT_S, DOWNLOAD_READ_TIMEOUT_S))
         if resp.status_code != 200:
             return None, f"API 失败: {resp.status_code}"
         data = resp.json()
@@ -822,8 +887,11 @@ def _missing_sequences(names):
     return missing
 
 def run_batch_pipeline(prefix, dry_run=False):
+    batch_start = time.monotonic()
+    _log_event("batch_start", prefix=prefix, dry_run=dry_run)
     results, err = search_videos(prefix)
     if err:
+        _log_event("batch_failed", prefix=prefix, stage="search", error=err)
         return {"success": False, "error": err}
 
     names = _eligible_source_names(results)
@@ -841,12 +909,41 @@ def run_batch_pipeline(prefix, dry_run=False):
         }
 
     ok, fail = [], []
-    for name in names:
+    total = len(names)
+    for index, name in enumerate(names, start=1):
+        item_start = time.monotonic()
+        _log_event("batch_item_start", prefix=prefix, index=index, total=total, name=name)
         result = full_pipeline(name)
         if result.get("success"):
             ok.append({"name": name, "vertical": result.get("vertical"), "reused": result.get("reused_existing", False)})
+            _log_event(
+                "batch_item_done",
+                prefix=prefix,
+                index=index,
+                total=total,
+                name=name,
+                reused=bool(result.get("reused_existing", False)),
+                seconds=round(time.monotonic() - item_start, 1),
+            )
         else:
             fail.append({"name": name, "error": result.get("error", "unknown")})
+            _log_event(
+                "batch_item_failed",
+                prefix=prefix,
+                index=index,
+                total=total,
+                name=name,
+                error=result.get("error", "unknown"),
+                seconds=round(time.monotonic() - item_start, 1),
+            )
+    _log_event(
+        "batch_done",
+        prefix=prefix,
+        processed=len(ok),
+        failed=len(fail),
+        missing=len(missing),
+        seconds=round(time.monotonic() - batch_start, 1),
+    )
 
     return {
         "success": len(fail) == 0 and len(missing) == 0,
@@ -869,14 +966,16 @@ def download_single(video_name):
 
     save_dir = get_save_dir(parsed["date"], parsed["user_code"])
     local_path = save_dir / f"{video_name}.mp4"
-    if os.path.exists(local_path):
-        return True, f"已存在({os.path.getsize(local_path)//1024//1024}MB)", str(local_path)
+    reuse = _reuse_existing_download(local_path, video_name)
+    if reuse:
+        return reuse
 
     encoded = quote(video_name, safe='')
     url = f"{API_BASE}?name={encoded}"
 
     try:
-        resp = requests.get(url, timeout=10)
+        session = _new_media_session()
+        resp = session.get(url, timeout=(DOWNLOAD_CONNECT_TIMEOUT_S, DOWNLOAD_READ_TIMEOUT_S))
         if resp.status_code != 200:
             return False, f"API 返回 {resp.status_code}", None
         data = resp.json()
@@ -898,19 +997,102 @@ def download_single(video_name):
     user_code = parsed["user_code"]
     local_path = save_dir / f"{name}.mp4"
 
-    if os.path.exists(local_path):
-        # 已存在则直接返回，跳过下载
-        return True, f"已存在({os.path.getsize(local_path)//1024//1024}MB)", str(local_path)
+    reuse = _reuse_existing_download(local_path, video_name)
+    if reuse:
+        return reuse
+    _cleanup_stale_download_parts(local_path)
 
-    try:
-        vr = requests.get(video_url, stream=True, timeout=120)
-        vr.raise_for_status()
-        with open(local_path, 'wb') as f:
-            for chunk in vr.iter_content(chunk_size=8192):
-                f.write(chunk)
-        return True, f"下载完成({os.path.getsize(local_path)//1024//1024}MB)", str(local_path)
-    except Exception as e:
-        return False, f"下载失败: {e}", None
+    last_error = None
+    for attempt in range(1, DOWNLOAD_RETRIES + 2):
+        tmp_path = local_path.with_suffix(local_path.suffix + f".{uuid.uuid4().hex}.part")
+        start = time.monotonic()
+        last_log_at = start
+        last_log_bytes = 0
+        bytes_written = 0
+        try:
+            _log_event(
+                "download_start",
+                name=video_name,
+                attempt=attempt,
+                max_attempts=DOWNLOAD_RETRIES + 1,
+                url=video_url,
+                path=str(local_path),
+                proxy=MEDIA_USE_ENV_PROXY,
+            )
+            with session.get(
+                video_url,
+                stream=True,
+                timeout=(DOWNLOAD_CONNECT_TIMEOUT_S, DOWNLOAD_READ_TIMEOUT_S),
+            ) as vr:
+                vr.raise_for_status()
+                total_header = vr.headers.get("content-length")
+                expected_total = int(total_header) if total_header and total_header.isdigit() else None
+                with open(tmp_path, 'wb') as f:
+                    for chunk in vr.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                        now = time.monotonic()
+                        if now - start > DOWNLOAD_TOTAL_TIMEOUT_S:
+                            raise TimeoutError(f"下载总耗时超过 {DOWNLOAD_TOTAL_TIMEOUT_S}s")
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        bytes_written += len(chunk)
+                        elapsed = max(now - start, 0.001)
+                        avg_rate = bytes_written / elapsed
+                        if elapsed >= DOWNLOAD_MIN_RATE_AFTER_S and avg_rate < DOWNLOAD_MIN_RATE_BPS:
+                            raise TimeoutError(
+                                f"下载均速过低 {avg_rate/1024:.1f}KB/s < {DOWNLOAD_MIN_RATE_BPS/1024:.0f}KB/s"
+                            )
+                        if (now - last_log_at >= DOWNLOAD_PROGRESS_INTERVAL_S
+                                or bytes_written - last_log_bytes >= DOWNLOAD_PROGRESS_BYTES):
+                            _log_event(
+                                "download_progress",
+                                name=video_name,
+                                attempt=attempt,
+                                mb=round(bytes_written / 1024 / 1024, 1),
+                                total_mb=round(expected_total / 1024 / 1024, 1) if expected_total else None,
+                                avg_kbps=round(avg_rate / 1024, 1),
+                            )
+                            last_log_at = now
+                            last_log_bytes = bytes_written
+
+            if expected_total and bytes_written != expected_total:
+                raise IOError(f"下载大小不完整 {bytes_written} != {expected_total}")
+            os.replace(tmp_path, local_path)
+
+            ok, msg = _validate_video_file(str(local_path))
+            if not ok:
+                try:
+                    local_path.unlink()
+                except Exception:
+                    pass
+                raise IOError(f"下载后校验失败: {msg}")
+
+            _log_event(
+                "download_done",
+                name=video_name,
+                attempt=attempt,
+                mb=round(os.path.getsize(local_path) / 1024 / 1024, 1),
+                seconds=round(time.monotonic() - start, 1),
+            )
+            return True, f"下载完成({os.path.getsize(local_path)//1024//1024}MB)", str(local_path)
+        except Exception as e:
+            last_error = e
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+            _log_event(
+                "download_attempt_failed",
+                name=video_name,
+                attempt=attempt,
+                max_attempts=DOWNLOAD_RETRIES + 1,
+                error=str(e),
+            )
+            if attempt <= DOWNLOAD_RETRIES:
+                time.sleep(min(2 * attempt, 6))
+
+    return False, f"下载失败: {last_error}", None
 
 def _get_tenant_token():
     """获取飞书 tenant access token（使用 requests 避免代理缓存问题）"""
@@ -1114,24 +1296,39 @@ def full_pipeline(video_name):
     if not parsed:
         return {"success": False, "error": f"文件名格式错误: {video_name}"}
 
+    _log_event("pipeline_start", name=video_name)
+
     with PipelineLock(parsed["date"], parsed["user_code"]):
         state = _load_state(parsed["date"], parsed["user_code"])
         record = state["records"].get(video_name, {})
         if record.get("vertical") and _is_valid_completed_output(record["vertical"]):
+            _log_event("pipeline_reuse_state", name=video_name, vertical=record["vertical"])
             return _pipeline_success(
                 video_name, parsed, record.get("downloaded", ""), record["vertical"],
                 record.get("status", "改竖"), cover=record.get("cover") or None,
                 cover_uncertain=record.get("cover_uncertain", False), reused=True
             )
 
-        success, msg, download_path = download_single(video_name)
-        if not success:
-            return {"success": False, "error": f"下载失败: {msg}"}
+    success, msg, download_path = download_single(video_name)
+    if not success:
+        _log_event("pipeline_failed", name=video_name, stage="download", error=msg)
+        return {"success": False, "error": f"下载失败: {msg}"}
 
-        ok, msg2 = _validate_video_file(download_path)
-        if not ok:
-            return {"success": False, "error": f"下载文件异常: {msg2}"}
+    ok, msg2 = _validate_video_file(download_path)
+    if not ok:
+        _log_event("pipeline_failed", name=video_name, stage="validate_download", error=msg2)
+        return {"success": False, "error": f"下载文件异常: {msg2}"}
 
+    with PipelineLock(parsed["date"], parsed["user_code"]):
+        state = _load_state(parsed["date"], parsed["user_code"])
+        record = state["records"].get(video_name, {})
+        if record.get("vertical") and _is_valid_completed_output(record["vertical"]):
+            _log_event("pipeline_reuse_state_after_download", name=video_name, vertical=record["vertical"])
+            return _pipeline_success(
+                video_name, parsed, download_path, record["vertical"],
+                record.get("status", "改竖"), cover=record.get("cover") or None,
+                cover_uncertain=record.get("cover_uncertain", False), reused=True
+            )
         existing_vertical = _find_existing_vertical(video_name, parsed, source_path=download_path)
         if existing_vertical:
             result = _pipeline_success(
@@ -1140,25 +1337,46 @@ def full_pipeline(video_name):
             )
             _remember_success(state, video_name, result)
             _save_state(parsed["date"], parsed["user_code"], state)
+            _log_event("pipeline_reuse_existing", name=video_name, vertical=existing_vertical)
             return result
 
         if is_vertical_video(download_path):
             result = _pipeline_success(video_name, parsed, download_path, download_path, "竖版原视频")
             _remember_success(state, video_name, result)
             _save_state(parsed["date"], parsed["user_code"], state)
+            _log_event("pipeline_done", name=video_name, status="竖版原视频", vertical=download_path)
             return result
 
-        cover, cover_uncertain = find_cover_image(video_name, video_path=download_path) or (None, False)
-        success, output_path = process_vertical(download_path, cover)
-        if not success:
-            return {"success": False, "error": f"改竖失败: {output_path}"}
+    cover, cover_uncertain = find_cover_image(video_name, video_path=download_path) or (None, False)
+    success, output_path = process_vertical(download_path, cover)
+    if not success:
+        _log_event("pipeline_failed", name=video_name, stage="vertical", error=output_path)
+        return {"success": False, "error": f"改竖失败: {output_path}"}
 
-        ok_move, msg_move = _validate_video_file(output_path)
-        if not ok_move:
-            return {"success": False, "error": f"改竖成品异常: {msg_move}"}
-        if not is_vertical_video(output_path):
-            return {"success": False, "error": f"改竖成品尺寸异常: {get_video_dimensions(output_path)}"}
+    ok_move, msg_move = _validate_video_file(output_path)
+    if not ok_move:
+        _log_event("pipeline_failed", name=video_name, stage="validate_vertical", error=msg_move)
+        return {"success": False, "error": f"改竖成品异常: {msg_move}"}
+    if not is_vertical_video(output_path):
+        err = f"改竖成品尺寸异常: {get_video_dimensions(output_path)}"
+        _log_event("pipeline_failed", name=video_name, stage="validate_vertical_dims", error=err)
+        return {"success": False, "error": err}
 
+    with PipelineLock(parsed["date"], parsed["user_code"]):
+        state = _load_state(parsed["date"], parsed["user_code"])
+        record = state["records"].get(video_name, {})
+        if record.get("vertical") and _is_valid_completed_output(record["vertical"]):
+            try:
+                if output_path and os.path.exists(output_path) and output_path != download_path:
+                    os.remove(output_path)
+            except Exception:
+                pass
+            _log_event("pipeline_reuse_state_after_vertical", name=video_name, vertical=record["vertical"])
+            return _pipeline_success(
+                video_name, parsed, download_path, record["vertical"],
+                record.get("status", "改竖"), cover=record.get("cover") or cover,
+                cover_uncertain=record.get("cover_uncertain", cover_uncertain), reused=True
+            )
         next_seq = get_next_seq(parsed["date"], parsed["user_code"], source_seq=parsed["seq"])
         save_dir = get_save_dir(parsed["date"], parsed["user_code"])
         while True:
@@ -1181,6 +1399,7 @@ def full_pipeline(video_name):
         )
         _remember_success(state, video_name, result, cover_uncertain=cover_uncertain)
         _save_state(parsed["date"], parsed["user_code"], state)
+        _log_event("pipeline_done", name=video_name, status="改竖", vertical=str(final_path))
         return result
 
 def main():
