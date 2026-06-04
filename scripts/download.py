@@ -307,30 +307,35 @@ def get_date_dir(date_str):
     """返回 YYYY-MM-DD 格式的日期目录名"""
     return get_date_subdir(date_str)
 
-def get_next_seq(date, user_code, source_seq=None):
-    """扫描日期目录，找到相同用户代码的最大序号，返回下一个序号。
+def _extract_seq_from_name(name, date, user_code):
+    fname = Path(name).name
+    m = re.match(rf'^{re.escape(date)}{re.escape(user_code)}(\d+)-', fname)
+    return int(m.group(1)) if m else None
+
+def get_next_seq(date, user_code, source_seq=None, min_seq=1):
+    """扫描日期目录，找到相同用户代码的最大序号，返回下一个可用成品序号。
 
     参数:
         date: 26MMDD
         user_code: 用户代码
-        source_seq: 如果传了，优先用 source_seq 作为新改竖成品的 seq（同名同 seq 原则）
+        source_seq: 旧参数，保留兼容但不再采用；改竖成品必须顺延，不能与原始素材同号
+        min_seq: 本批次成品允许使用的最小序号，例如原始 BY1/BY2 时传 3
     """
     if source_seq is not None:
-        return source_seq
+        _log_event("sequence_source_seq_ignored", date=date, user_code=user_code, source_seq=source_seq)
     max_seq = 0
     save_dir = get_save_dir(date, user_code)
     if not save_dir.exists():
-        return 1
+        return max(1, int(min_seq or 1))
     for fname in os.listdir(save_dir):
         if not fname.lower().endswith('.mp4'):
             continue
         if 'vertical_' in fname:
             continue
-        m = re.match(rf'^{date}{user_code}(\d+)-', fname)
-        if m:
-            seq = int(m.group(1))
+        seq = _extract_seq_from_name(fname, date, user_code)
+        if seq is not None:
             max_seq = max(max_seq, seq)
-    return max_seq + 1
+    return max(max_seq + 1, int(min_seq or 1))
 
 def build_filename(date, user_code, seq, content, suffix):
     """组合输出文件名：{26MMDD}{USER_CODE}{seq}-龙虾改竖{content}-{suffix}.mp4"""
@@ -760,7 +765,19 @@ def _is_valid_completed_output(path):
         return False
     return is_vertical_video(str(path))
 
-def _find_existing_vertical(video_name, parsed, source_path=None):
+def _is_sequence_valid_for_product(path, parsed, min_output_seq=1):
+    seq = _extract_seq_from_name(Path(path).name, parsed["date"], parsed["user_code"])
+    return seq is not None and seq >= int(min_output_seq or 1)
+
+def _record_has_reusable_vertical(record, parsed, min_output_seq=1):
+    vertical = record.get("vertical")
+    if not _is_valid_completed_output(vertical):
+        return False
+    if record.get("status") == "竖版原视频":
+        return True
+    return _is_sequence_valid_for_product(vertical, parsed, min_output_seq=min_output_seq)
+
+def _find_existing_vertical(video_name, parsed, source_path=None, min_output_seq=1):
     """查找同一 source 已生成的合规改竖成品。
 
     选接策略：seq 跟 video_name 序号最接近的（处理旧版序号错位遗留的多个 match）。
@@ -773,6 +790,14 @@ def _find_existing_vertical(video_name, parsed, source_path=None):
     matches = []
     for path in save_dir.glob(f"{prefix}*-龙虾改竖*.mp4"):
         if path.name.endswith(suffix) and _is_valid_completed_output(path):
+            if not _is_sequence_valid_for_product(path, parsed, min_output_seq=min_output_seq):
+                _log_event(
+                    "pipeline_ignore_existing_low_seq",
+                    name=video_name,
+                    vertical=str(path),
+                    min_output_seq=min_output_seq,
+                )
+                continue
             if source_path and path.stat().st_mtime < Path(source_path).stat().st_mtime:
                 continue
             seq_match = re.match(rf'^{parsed["date"]}{parsed["user_code"]}(\d+)-', path.name)
@@ -886,6 +911,53 @@ def _missing_sequences(names):
             missing.append({"date": date, "user_code": user_code, "missing_seq": gaps})
     return missing
 
+def _build_batch_seq_floors(names):
+    """For each date/user batch, products should start after the highest source seq."""
+    floors = {}
+    for name in names:
+        parsed = parse_filename(name)
+        if not parsed:
+            continue
+        key = (parsed["date"], parsed["user_code"])
+        floors[key] = max(floors.get(key, 0), parsed["seq"] + 1)
+    return floors
+
+def _infer_min_output_seq_for_source(video_name, parsed):
+    """Infer output sequence floor for single --pipeline runs.
+
+    Batch mode passes this explicitly. Manual single runs still need to know that
+    BY1/BY2 source material means products must start from BY3.
+    """
+    floor = parsed["seq"] + 1
+    prefix = f"{parsed['date']}{parsed['user_code']}"
+
+    try:
+        results, err = search_videos(prefix)
+        if not err:
+            names = []
+            for name in _eligible_source_names(results):
+                other = parse_filename(name)
+                if other and other["date"] == parsed["date"] and other["user_code"] == parsed["user_code"]:
+                    names.append(name)
+            api_floor = _build_batch_seq_floors(names).get((parsed["date"], parsed["user_code"]))
+            if api_floor:
+                floor = max(floor, api_floor)
+    except Exception as e:
+        _log_event("sequence_floor_api_infer_failed", name=video_name, error=str(e))
+
+    try:
+        save_dir = get_save_dir(parsed["date"], parsed["user_code"])
+        for path in save_dir.glob(f"{prefix}*.mp4"):
+            if is_generated_vertical_name(path.name):
+                continue
+            other = parse_filename(path.name)
+            if other and other["date"] == parsed["date"] and other["user_code"] == parsed["user_code"]:
+                floor = max(floor, other["seq"] + 1)
+    except Exception as e:
+        _log_event("sequence_floor_local_infer_failed", name=video_name, error=str(e))
+
+    return max(1, floor)
+
 def run_batch_pipeline(prefix, dry_run=False):
     batch_start = time.monotonic()
     _log_event("batch_start", prefix=prefix, dry_run=dry_run)
@@ -897,6 +969,7 @@ def run_batch_pipeline(prefix, dry_run=False):
     names = _eligible_source_names(results)
     skipped = [v.get("name", "") for v in results if is_generated_vertical_name(v.get("name", ""))]
     missing = _missing_sequences(names)
+    seq_floors = _build_batch_seq_floors(names)
     if dry_run:
         return {
             "success": True,
@@ -905,6 +978,7 @@ def run_batch_pipeline(prefix, dry_run=False):
             "eligible": len(names),
             "skipped_vertical": len(skipped),
             "missing_sequences": missing,
+            "seq_floors": {f"{date}{user}": floor for (date, user), floor in sorted(seq_floors.items())},
             "todo": names
         }
 
@@ -913,7 +987,9 @@ def run_batch_pipeline(prefix, dry_run=False):
     for index, name in enumerate(names, start=1):
         item_start = time.monotonic()
         _log_event("batch_item_start", prefix=prefix, index=index, total=total, name=name)
-        result = full_pipeline(name)
+        parsed = parse_filename(name)
+        min_output_seq = seq_floors.get((parsed["date"], parsed["user_code"]), 1) if parsed else 1
+        result = full_pipeline(name, min_output_seq=min_output_seq)
         if result.get("success"):
             ok.append({"name": name, "vertical": result.get("vertical"), "reused": result.get("reused_existing", False)})
             _log_event(
@@ -1291,22 +1367,32 @@ def _remember_success(state, video_name, result, cover_uncertain=False):
         "updated_at": datetime.now().isoformat(timespec="seconds")
     }
 
-def full_pipeline(video_name):
+def full_pipeline(video_name, min_output_seq=None):
     parsed = parse_filename(video_name)
     if not parsed:
         return {"success": False, "error": f"文件名格式错误: {video_name}"}
 
-    _log_event("pipeline_start", name=video_name)
+    if min_output_seq is None:
+        min_output_seq = _infer_min_output_seq_for_source(video_name, parsed)
+    min_output_seq = int(min_output_seq or 1)
+    _log_event("pipeline_start", name=video_name, min_output_seq=min_output_seq)
 
     with PipelineLock(parsed["date"], parsed["user_code"]):
         state = _load_state(parsed["date"], parsed["user_code"])
         record = state["records"].get(video_name, {})
-        if record.get("vertical") and _is_valid_completed_output(record["vertical"]):
+        if record.get("vertical") and _record_has_reusable_vertical(record, parsed, min_output_seq=min_output_seq):
             _log_event("pipeline_reuse_state", name=video_name, vertical=record["vertical"])
             return _pipeline_success(
                 video_name, parsed, record.get("downloaded", ""), record["vertical"],
                 record.get("status", "改竖"), cover=record.get("cover") or None,
                 cover_uncertain=record.get("cover_uncertain", False), reused=True
+            )
+        if record.get("vertical"):
+            _log_event(
+                "pipeline_ignore_state_low_seq",
+                name=video_name,
+                vertical=record.get("vertical"),
+                min_output_seq=min_output_seq,
             )
 
     success, msg, download_path = download_single(video_name)
@@ -1322,14 +1408,23 @@ def full_pipeline(video_name):
     with PipelineLock(parsed["date"], parsed["user_code"]):
         state = _load_state(parsed["date"], parsed["user_code"])
         record = state["records"].get(video_name, {})
-        if record.get("vertical") and _is_valid_completed_output(record["vertical"]):
+        if record.get("vertical") and _record_has_reusable_vertical(record, parsed, min_output_seq=min_output_seq):
             _log_event("pipeline_reuse_state_after_download", name=video_name, vertical=record["vertical"])
             return _pipeline_success(
                 video_name, parsed, download_path, record["vertical"],
                 record.get("status", "改竖"), cover=record.get("cover") or None,
                 cover_uncertain=record.get("cover_uncertain", False), reused=True
             )
-        existing_vertical = _find_existing_vertical(video_name, parsed, source_path=download_path)
+        if record.get("vertical"):
+            _log_event(
+                "pipeline_ignore_state_low_seq_after_download",
+                name=video_name,
+                vertical=record.get("vertical"),
+                min_output_seq=min_output_seq,
+            )
+        existing_vertical = _find_existing_vertical(
+            video_name, parsed, source_path=download_path, min_output_seq=min_output_seq
+        )
         if existing_vertical:
             result = _pipeline_success(
                 video_name, parsed, download_path, existing_vertical,
@@ -1365,7 +1460,7 @@ def full_pipeline(video_name):
     with PipelineLock(parsed["date"], parsed["user_code"]):
         state = _load_state(parsed["date"], parsed["user_code"])
         record = state["records"].get(video_name, {})
-        if record.get("vertical") and _is_valid_completed_output(record["vertical"]):
+        if record.get("vertical") and _record_has_reusable_vertical(record, parsed, min_output_seq=min_output_seq):
             try:
                 if output_path and os.path.exists(output_path) and output_path != download_path:
                     os.remove(output_path)
@@ -1377,7 +1472,14 @@ def full_pipeline(video_name):
                 record.get("status", "改竖"), cover=record.get("cover") or cover,
                 cover_uncertain=record.get("cover_uncertain", cover_uncertain), reused=True
             )
-        next_seq = get_next_seq(parsed["date"], parsed["user_code"], source_seq=parsed["seq"])
+        if record.get("vertical"):
+            _log_event(
+                "pipeline_ignore_state_low_seq_after_vertical",
+                name=video_name,
+                vertical=record.get("vertical"),
+                min_output_seq=min_output_seq,
+            )
+        next_seq = get_next_seq(parsed["date"], parsed["user_code"], min_seq=min_output_seq)
         save_dir = get_save_dir(parsed["date"], parsed["user_code"])
         while True:
             final_name = build_filename(parsed["date"], parsed["user_code"], next_seq, parsed["content"], parsed["suffix"])

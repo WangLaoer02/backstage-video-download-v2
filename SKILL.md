@@ -3,15 +3,15 @@ name: backstage-video-download-v2
 description: 从广告平台 API 批量下载视频，支持前缀搜索、断点续传，每日定时任务。下载后自动进行改竖处理（AI 角色识别 + 贴图匹配 + handler.py 执行 + 按原视频日期归档到 /Volumes/美术AI龙虾/{用户代码}/后台下载/{YYYY-MM-DD}/ 目录）。
 metadata:
   short-description: 后台视频下载与稳定改竖
-  version: v2.6.0
-  date: 2026-06-02
+  version: v2.7.0
+  date: 2026-06-04
   trigger-keywords:
     - 下载视频
     - 后台下载
     - 广告平台视频
 ---
 
-# backstage-video-download v2.6.0 Skill
+# backstage-video-download v2.7.0 Skill
 
 ## 功能概述
 
@@ -23,6 +23,7 @@ metadata:
 ## ⚠️ 脚本路径说明
 
 > 实际生效路径：**`~/.agents/skills/backstage-video-download-v2/scripts/`**
+> v2.7.0 已加入：改竖成品序号强制顺延，不允许与同批原始素材同号。
 > v2.6.0 已加入：下载直连优先、1MB 分块、`.part` 原子落盘、断流重试、批次结构化耗时日志。
 > v2.5.0 已加入：AI 角色名纠错、错词映射、贴图库优先匹配，尽量避免落到通用贴图。
 
@@ -142,14 +143,16 @@ python3 download.py --batch-pipeline "260529" --dry-run
 
 > 成品序号 = 扫描日期目录下所有文件的序号最大值 + 1
 > 扫描范围：原始文件 + 龙虾改竖成品，合并计算 max
+> 同一批次必须先看 API 返回的原始素材最大序号，成品最低从 `max_source_seq + 1` 开始。
 
-| 场景 | 原始文件 | 目录成品文件 | max扫描结果 | 下一个成品序号 |
-|------|----------|-------------|-------------|---------------|
-| 新批次首批 | 1条 | 0条 | 1 | 2 |
-| 同批次第N条 | N条 | M条 | max(N,M) | max+1 |
-| 跨批次追加 | 1条 | 已有前批成品 | 前批成品号 | 前批成品号+1 |
+| 场景 | 原始文件 | 目录成品文件 | 成品起始/下一个序号 |
+|------|----------|-------------|-------------------|
+| 新批次两条 | BY1, BY2 | 0条 | BY3, BY4 |
+| 同批次第N条 | 1..N | M条 | max(N, M) + 1 |
+| 跨批次追加 | 1条 | 已有前批成品 | 前批成品号 + 1 |
+| 手动单条补跑 | BY1，但 API/本地还有 BY2 | 0条 | BY3 |
 
-**代码：** `get_next_seq(date, user_code)` 扫描 `{用户代码}/后台下载/{YYYY-MM-DD}/` 目录下所有 `.mp4` 文件，按 `{26MMDD}{USER_CODE}{seq}` 模式提取序号，取最大值 + 1
+**代码：** `--batch-pipeline` 先用 `_build_batch_seq_floors()` 计算每个 `{date,user}` 的 `max_source_seq + 1`，再由 `get_next_seq(date, user_code, min_seq=...)` 扫描 `{用户代码}/后台下载/{YYYY-MM-DD}/` 目录下所有 `.mp4` 文件，取 `max(目录最大序号 + 1, min_seq)`。
 
 ## 幂等与防重复规则
 
@@ -158,6 +161,7 @@ python3 download.py --batch-pipeline "260529" --dry-run
 - 每个 `{用户代码}/后台下载/{YYYY-MM-DD}/` 目录会写入 `.backstage_pipeline_state.json`
 - 每次 `--pipeline` 会先查状态文件，再扫描已有 `*-龙虾改竖{原内容}-{后缀}.mp4`
 - 已存在且通过 720×1280 + 时长校验时，直接返回 `reused_existing=True`
+- 旧状态里如果记录了低于本批成品起始号的同号成品（如 `BY1-龙虾改竖...`），会被忽略并重新生成顺延号
 - 序号分配在 `.backstage_pipeline.lock` 文件锁内执行，避免并发跑任务时撞号
 - 横版下载文件只有通过大小 + ffprobe 时长校验才会复用；残缺 `.mp4` 会删除后重下
 - 下载先写入唯一 `.part` 临时文件，成功校验后 `os.replace()` 原子落盘，避免半截文件污染状态
@@ -310,6 +314,12 @@ python3 download.py --batch-pipeline "260529" --dry-run
 - 日期格式：`YYMMDD`（260420 = 2026年4月20日）
 
 ## 版本记录
+
+### v2.7.0（2026-06-04）
+- 修正：改竖成品序号恢复顺延规则，`260604BY1/260604BY2` 的成品输出为 `260604BY3/260604BY4`
+- 新增：批次执行前计算 `{date,user}` 的 `seq_floors`，成品最低从同批原始素材最大序号 + 1 开始
+- 新增：单条 `--pipeline` 会通过 API/本地原片推断同批最大原始序号，避免人工补跑也输出同号成品
+- 修正：旧状态账本或旧文件里的低序号成品不会被复用，避免错误同号产物长期污染
 
 ### v2.6.0（2026-06-02）
 - 修正：媒体下载默认绕过本机代理，避免 `HTTP_PROXY=http://127.0.0.1:33210` 导致大文件下载变慢
