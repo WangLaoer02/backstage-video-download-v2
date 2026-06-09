@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 SCRIPT = str(Path(__file__).resolve().parent / "download.py")
+CRON_USER = (os.getenv("BACKSTAGE_CRON_USER") or "").strip().upper()
 
 def search_recent_videos():
     """搜索近5天所有批次（26MMDD + 2026MMDD）"""
@@ -36,7 +37,10 @@ def search_recent_videos():
     return found_dates
 
 def run_batch(prefix):
-    result = subprocess.run(['python3', SCRIPT, '--batch-pipeline', prefix], capture_output=True, text=True, timeout=3600)
+    cmd = ['python3', SCRIPT, '--batch-pipeline', prefix]
+    if CRON_USER:
+        cmd.extend(['--user', CRON_USER])
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     try:
         return json.loads(result.stdout)
     except:
@@ -44,6 +48,10 @@ def run_batch(prefix):
 
 def main():
     print(f"[cron] 开始增量检查...")
+    if CRON_USER:
+        print(f"[cron] 用户过滤: {CRON_USER}")
+    else:
+        print("[cron] 用户过滤未设置：download.py 会拒绝无 --user 的批处理，除非主实例授权全员模式")
 
     prefixes = search_recent_videos()
     print(f"[cron] 近5天有素材的批次: {len(prefixes)} 个")
@@ -58,7 +66,7 @@ def main():
         result = run_batch(prefix)
         if result.get("success"):
             ok += 1
-            print(f"[cron] ✅ {prefix} processed={result.get('processed')} reused/skip included")
+            print(f"[cron] ✅ {prefix} user={result.get('user_filter')} processed={result.get('processed')} reused/skip included")
         else:
             fail.append({"prefix": prefix, "result": result})
             print(f"[cron] ❌ {prefix}: {result.get('error') or result.get('failed_list') or result.get('missing_sequences')}")
