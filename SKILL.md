@@ -24,7 +24,8 @@ metadata:
 
 > 实际生效路径：**`~/.agents/skills/backstage-video-download-v2/scripts/`**
 > v2.9.0 已加入：`--week-pipeline` 本周后台视频改竖入口，按本周一到今天逐日双前缀搜索，并额外扫描本周本地目录中的横版源文件，避免漏扫后误报“后台没有”。
-> v2.8.1 已加入：`--batch-pipeline` 和 `--download-prefix` 默认必须提供 `--user USER`；全员模式只允许 18789 主实例授权环境并同时提供 `--all-users --confirm-all-users`。
+> v2.8.2 已加入：DW 管理员分号（19666 或 `BACKSTAGE_ADMIN_ALL_USERS=1`）默认覆盖所有用户编号，不需要 `--user` / `--all-users --confirm-all-users`；普通员工实例仍必须提供 `--user USER`。
+> v2.8.1 已加入：普通员工实例的 `--batch-pipeline` 和 `--download-prefix` 默认必须提供 `--user USER`；全员模式只允许 18789 主实例或 DW 管理员分号授权环境。
 > v2.8.0 已加入：`--batch-pipeline/--download-prefix --dry-run` 支持 `--user USER` 过滤；未知参数会直接报错，避免静默跨员工处理。
 > v2.7.0 已加入：改竖成品序号强制顺延，不允许与同批原始素材同号。
 > v2.6.0 已加入：下载直连优先、1MB 分块、`.part` 原子落盘、断流重试、批次结构化耗时日志。
@@ -77,7 +78,16 @@ python3 download.py --week-pipeline --user TM
 
 `--week-pipeline` 会从本周一到今天逐日搜索，并同时尝试 `YYMMDD` 与 `YYYYMMDD` 两种前缀；还会扫描 `{用户}/后台下载/{YYYY-MM-DD}/` 下本周已下载但后台当前搜不到的横版源文件。只有 `searched_prefixes` 全部检查完、`local_scan_errors=[]` 且 `todo=[]` 时，才允许说本周没有该用户待处理视频。
 
-全员处理只允许 18789 主实例授权环境执行：
+DW 管理员分号默认全员处理，不需要加 `--user`：
+
+```bash
+BACKSTAGE_ADMIN_ALL_USERS=1 python3 download.py --week-pipeline --dry-run
+BACKSTAGE_ADMIN_ALL_USERS=1 python3 download.py --week-pipeline
+BACKSTAGE_ADMIN_ALL_USERS=1 python3 download.py --batch-pipeline "260601" --dry-run
+BACKSTAGE_ADMIN_ALL_USERS=1 python3 download.py --batch-pipeline "260601"
+```
+
+18789 主实例仍可用显式全员授权参数：
 
 ```bash
 OPENCLAW_CHIEF_INSTANCE=18789 python3 download.py --batch-pipeline "260601" --all-users --confirm-all-users --dry-run
@@ -95,7 +105,7 @@ OPENCLAW_CHIEF_INSTANCE=18789 python3 download.py --batch-pipeline "260601" --al
 - [ ] 异常条目记入 memory/errors.md
 - [ ] **处理单个员工时必须带 `--user USER`，dry-run 的 `todo` 必须逐条确认只含目标用户代码**
 - [ ] **处理“本周”必须先看 `--week-pipeline --dry-run` 的 `searched_prefixes`、`eligible_from_local`、`local_only` 和 `local_scan_errors`，不能只按今天/最近几天猜测**
-- [ ] **跨员工批处理必须分用户执行，不允许只按日期前缀一次性跑全员，除非东玥/18789 主实例明确授权**
+- [ ] **DW 管理员分号默认覆盖所有用户编号；普通员工实例跨员工批处理必须分用户执行，除非东玥/18789 主实例明确授权**
 - [ ] **不要向员工提供脚本命令作为便利入口；员工只提交自然语言任务，由实例按绑定用户执行**
 
 ## 脚本速查

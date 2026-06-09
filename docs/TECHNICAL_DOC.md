@@ -95,6 +95,10 @@ python3 download.py --batch-pipeline "260511" --user JR
 # ④ 本周后台视频改竖：自然语言“将本周后台的视频改竖”必须用这个
 python3 download.py --week-pipeline --user JR --dry-run
 python3 download.py --week-pipeline --user JR
+
+# DW 管理员分号默认全编号/全用户
+BACKSTAGE_ADMIN_ALL_USERS=1 python3 download.py --week-pipeline --dry-run
+BACKSTAGE_ADMIN_ALL_USERS=1 python3 download.py --week-pipeline
 ```
 
 ### 3.2 日期格式
@@ -120,14 +124,20 @@ python3 download.py --week-pipeline --user JR
 
 ## 四、完整执行流程
 
-> 按此顺序执行，不跳步。员工实例必须使用自身绑定的用户代码；不要把脚本命令暴露给普通员工。
+> 按此顺序执行，不跳步。普通员工实例必须使用自身绑定的用户代码；DW 管理员分号默认覆盖所有用户编号，不需要 `--user`。
 
 ### 4.1 本周后台视频改竖
 
-收到“将本周后台的视频改竖 / 本周后台视频 / 这周后台都改竖”时，必须先跑本周 dry-run：
+普通员工实例收到“将本周后台的视频改竖 / 本周后台视频 / 这周后台都改竖”时，必须先跑本周 dry-run：
 
 ```bash
 python3 download.py --week-pipeline --user JR --dry-run
+```
+
+DW 管理员分号收到同类任务时默认全编号/全用户：
+
+```bash
+BACKSTAGE_ADMIN_ALL_USERS=1 python3 download.py --week-pipeline --dry-run
 ```
 
 检查返回值：
@@ -141,6 +151,12 @@ python3 download.py --week-pipeline --user JR --dry-run
 
 ```bash
 python3 download.py --week-pipeline --user JR
+```
+
+DW 管理员分号正式执行：
+
+```bash
+BACKSTAGE_ADMIN_ALL_USERS=1 python3 download.py --week-pipeline
 ```
 
 ### 4.2 单日批次改竖
@@ -350,7 +366,7 @@ def _retry_write_to_bitable(
 执行完一批改竖任务后，逐一核查：
 
 - [ ] “本周”任务必须先检查 `--week-pipeline --dry-run` 的 `searched_prefixes`、`eligible_from_local`、`local_only`、`local_scan_errors`
-- [ ] 单用户任务必须带 `--user USER`，dry-run 的 `todo` 只能包含目标用户
+- [ ] 普通员工单用户任务必须带 `--user USER`，dry-run 的 `todo` 只能包含目标用户；DW 管理员分号默认全编号/全用户
 - [ ] `eligible` 与 `todo` 数量一致，`failed=0`
 - [ ] `missing_sequences=[]`；若不为空，必须报告缺号，不得说后台没有
 - [ ] 成品文件存在于目标目录（720×1280）
@@ -435,6 +451,7 @@ for v in videos:
 | 版本 | 日期 | 变更 |
 |------|------|------|
 | v2.9.0 | 2026-06-10 | 新增 `--week-pipeline` 本周入口，逐日双前缀搜索，并扫描本地遗留横版源文件，防止漏扫后误报没有 |
+| v2.8.2 | 2026-06-10 | DW 管理员分号默认覆盖所有用户编号，cron 不再固定 `BACKSTAGE_CRON_USER=D` |
 | v2.8.1 | 2026-06-10 | `--batch-pipeline` / `--download-prefix` 强制用户隔离，全员模式仅 18789 授权 |
 | v2.2.0 | 2026-04-28 | 标准批处理流程 + 竖版原视频判断标准 + 用户代码→IP映射表 |
 | v2.1.0 | 2026-04-27 | 重写 download.py，集成 AI 角色识别 |

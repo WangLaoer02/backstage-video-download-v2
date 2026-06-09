@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 SCRIPT = str(Path(__file__).resolve().parent / "download.py")
 CRON_USER = (os.getenv("BACKSTAGE_CRON_USER") or "").strip().upper()
+ADMIN_ALL_USERS = os.getenv("BACKSTAGE_ADMIN_ALL_USERS", "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 def search_recent_videos():
     """搜索近5天所有批次（26MMDD + 2026MMDD）"""
@@ -38,7 +39,7 @@ def search_recent_videos():
 
 def run_batch(prefix):
     cmd = ['python3', SCRIPT, '--batch-pipeline', prefix]
-    if CRON_USER:
+    if CRON_USER and not ADMIN_ALL_USERS:
         cmd.extend(['--user', CRON_USER])
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     try:
@@ -48,10 +49,12 @@ def run_batch(prefix):
 
 def main():
     print(f"[cron] 开始增量检查...")
-    if CRON_USER:
+    if ADMIN_ALL_USERS:
+        print("[cron] DW管理员全量模式：默认覆盖所有用户编号")
+    elif CRON_USER:
         print(f"[cron] 用户过滤: {CRON_USER}")
     else:
-        print("[cron] 用户过滤未设置：download.py 会拒绝无 --user 的批处理，除非主实例授权全员模式")
+        print("[cron] 用户过滤未设置：download.py 会拒绝无 --user 的批处理，除非主实例/DW管理员授权全员模式")
 
     prefixes = search_recent_videos()
     print(f"[cron] 近5天有素材的批次: {len(prefixes)} 个")

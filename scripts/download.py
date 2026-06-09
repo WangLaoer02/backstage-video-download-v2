@@ -949,8 +949,26 @@ def _parse_option_value(flag):
         return None
     return value
 
+def _truthy_env(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "y", "on")
+
 def _chief_all_users_authorized():
     return os.environ.get("OPENCLAW_CHIEF_INSTANCE") == "18789"
+
+def _dw_admin_all_users_authorized():
+    if _truthy_env("BACKSTAGE_ADMIN_ALL_USERS") or _truthy_env("OPENCLAW_BACKSTAGE_ADMIN"):
+        return True
+    if os.environ.get("OPENCLAW_INSTANCE_PORT") == "19666":
+        return True
+    markers = (
+        os.environ.get("OPENCLAW_STATE_DIR", ""),
+        os.environ.get("OPENCLAW_CONFIG_PATH", ""),
+        os.environ.get("OPENCLAW_WORKSPACE", ""),
+    )
+    return any("/.openclaw-instances/dw/" in marker or marker.endswith("/.openclaw-instances/dw") for marker in markers)
+
+def _default_all_users_authorized():
+    return _chief_all_users_authorized() or _dw_admin_all_users_authorized()
 
 def _all_users_requested():
     return "--all-users" in sys.argv or "--confirm-all-users" in sys.argv
@@ -959,11 +977,13 @@ def _validate_user_scope(command_name, user_filter):
     user_filter = _normalize_user_filter(user_filter)
     if user_filter:
         return True, None
+    if _default_all_users_authorized():
+        return True, None
     if "--all-users" in sys.argv and "--confirm-all-users" in sys.argv and _chief_all_users_authorized():
         return True, None
     if _all_users_requested() and not _chief_all_users_authorized():
-        return False, f"{command_name} 全员模式只允许 18789 主实例授权环境执行"
-    return False, f"{command_name} 必须提供 --user USER；全员模式需 18789 主实例环境 + --all-users --confirm-all-users"
+        return False, f"{command_name} 全员模式只允许 18789 主实例或 DW 管理员分号授权环境执行"
+    return False, f"{command_name} 必须提供 --user USER；全员模式需 18789 主实例，或 DW 管理员分号环境(BACKSTAGE_ADMIN_ALL_USERS=1/19666)"
 
 def _missing_sequences(names):
     groups = {}
@@ -1248,7 +1268,22 @@ def run_week_pipeline(dry_run=False, user_filter=None):
     local_scan = _local_week_source_scan(dates, user_filter=user_filter)
     local_names = local_scan["names"]
     api_name_set = set(api_names)
-    local_only_names = [name for name in local_names if name not in api_name_set]
+    api_seq_keys = {
+        (parsed["date"], parsed["user_code"], parsed["seq"])
+        for parsed in (parse_filename(name) for name in api_names)
+        if parsed
+    }
+    local_only_names = []
+    local_shadowed_by_api = []
+    for name in local_names:
+        if name in api_name_set:
+            continue
+        parsed = parse_filename(name)
+        seq_key = (parsed["date"], parsed["user_code"], parsed["seq"]) if parsed else None
+        if seq_key in api_seq_keys:
+            local_shadowed_by_api.append(name)
+            continue
+        local_only_names.append(name)
     names = _dedupe_names(api_names + local_only_names)
     skipped = [
         v.get("name", "") for v in all_results
@@ -1261,6 +1296,7 @@ def run_week_pipeline(dry_run=False, user_filter=None):
         user_filter=user_filter,
         local_sources=len(local_names),
         local_only=len(local_only_names),
+        local_shadowed_by_api=len(local_shadowed_by_api),
         vertical_originals=len(local_scan["vertical_originals"]),
         errors=len(local_scan["errors"]),
     )
@@ -1280,6 +1316,7 @@ def run_week_pipeline(dry_run=False, user_filter=None):
             "eligible_from_local": len(local_only_names),
             "local_sources": local_names,
             "local_only": local_only_names,
+            "local_shadowed_by_api": local_shadowed_by_api,
             "local_vertical_originals": local_scan["vertical_originals"],
             "local_scan_errors": local_scan["errors"],
             "skipped_vertical": len(skipped),
@@ -1344,6 +1381,7 @@ def run_week_pipeline(dry_run=False, user_filter=None):
         "eligible_from_local": len(local_only_names),
         "local_sources": local_names,
         "local_only": local_only_names,
+        "local_shadowed_by_api": local_shadowed_by_api,
         "local_vertical_originals": local_scan["vertical_originals"],
         "local_scan_errors": local_scan["errors"],
         "processed": len(ok),
