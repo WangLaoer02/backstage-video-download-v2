@@ -6,18 +6,30 @@
 import json, sys, os, re, requests, subprocess, tempfile, shutil, time, random, uuid, difflib
 from pathlib import Path
 from urllib.parse import quote
-from datetime import datetime
+from datetime import datetime, timedelta
 
 try:
-    from config import SAVE_DIR, ASSETS_DIR, API_BASE, IPv6_ROOT, BITABLE_APP_TOKEN, BITABLE_TABLE_ID, FEISHU_ACCESS_TOKEN
+    from config import (
+        SAVE_DIR,
+        ASSETS_DIR,
+        API_BASE,
+        IPv6_ROOT,
+        BITABLE_APP_TOKEN,
+        BITABLE_TABLE_ID,
+        FEISHU_ACCESS_TOKEN,
+        FEISHU_APP_ID,
+        FEISHU_APP_SECRET,
+    )
 except ImportError:
     SAVE_DIR = Path(os.getenv("BACKSTAGE_SAVE_DIR", "/Volumes/美术AI龙虾"))
     ASSETS_DIR = Path(os.getenv("BACKSTAGE_ASSETS_DIR", "/Volumes/美术AI龙虾/assets"))
     API_BASE = "http://adopenplatform.rongyao666.com/app/data/api/ApiGetJrttVideoByCategory.php"
     IPv6_ROOT = os.getenv("IPv6_ROOT", "http://[2408:8256:4c87:f19c::c42]:9092")
-    BITABLE_APP_TOKEN = os.getenv("BITABLE_APP_TOKEN", "SYP1b0qvOaY60xszqLycOK9PnNg")
-    BITABLE_TABLE_ID = os.getenv("BITABLE_TABLE_ID", "tblewZ4BB4tHPnFC")
-    FEISHU_ACCESS_TOKEN = os.getenv("FEISHU_ACCESS_TOKEN", "")
+    BITABLE_APP_TOKEN = os.getenv("BACKSTAGE_BITABLE_APP_TOKEN") or os.getenv("BITABLE_APP_TOKEN", "")
+    BITABLE_TABLE_ID = os.getenv("BACKSTAGE_BITABLE_TABLE_ID") or os.getenv("BITABLE_TABLE_ID", "")
+    FEISHU_ACCESS_TOKEN = os.getenv("BACKSTAGE_FEISHU_ACCESS_TOKEN") or os.getenv("FEISHU_ACCESS_TOKEN", "")
+    FEISHU_APP_ID = os.getenv("BACKSTAGE_FEISHU_APP_ID") or os.getenv("FEISHU_APP_ID", "")
+    FEISHU_APP_SECRET = os.getenv("BACKSTAGE_FEISHU_APP_SECRET") or os.getenv("FEISHU_APP_SECRET", "")
 
 HANDLER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "handler.py")
 EXPECTED_VERTICAL_DIMS = (720, 1280)
@@ -135,6 +147,7 @@ ROLE_PROFILES = [
     {"subdir": "kimetsu", "canonical": "甘露寺蜜璃", "aliases": ["甘露寺蜜璃", "甘露寺", "蜜璃"], "asset_keywords": ["甘露寺蜜璃", "甘露寺", "蜜璃"]},
     {"subdir": "kimetsu", "canonical": "富冈义勇", "aliases": ["富冈义勇", "富冈", "义勇"], "asset_keywords": ["富冈义勇", "义勇"]},
     {"subdir": "kimetsu", "canonical": "炼狱杏寿郎", "aliases": ["炼狱杏寿郎", "炼狱", "杏寿郎"], "asset_keywords": ["炼狱杏寿郎", "炼狱", "杏寿郎"]},
+    {"subdir": "kimetsu", "canonical": "时透无一郎", "aliases": ["时透无一郎", "无一郎"], "asset_keywords": ["无一郎", "时透无一郎"]},
     {"subdir": "kimetsu", "canonical": "猗窝座", "aliases": ["猗窝座"], "asset_keywords": ["猗窝座"]},
     {"subdir": "kimetsu", "canonical": "岩柱", "aliases": ["岩柱", "悲鸣", "行冥"], "asset_keywords": ["岩柱", "悲鸣", "行冥"]},
     {"subdir": "kimetsu", "canonical": "黑死牟", "aliases": ["黑死牟"], "asset_keywords": ["黑死牟"]},
@@ -156,13 +169,17 @@ ROLE_MISREADS = {
 FAMILY_HINTS = {
     "naruto": ["火影", "忍者", "晓组织", "九尾", "查克拉", "佐助", "鸣人", "鼬", "小樱", "雏田", "洗髓"],
     "jujutsu": ["咒术", "咒回", "领域", "五条", "宿傩", "虎杖", "伏黑", "乙骨"],
-    "kimetsu": ["鬼灭", "呼吸", "炭治郎", "祢豆子", "善逸", "蝴蝶", "炼狱"],
+    "kimetsu": ["鬼灭", "呼吸", "炭治郎", "祢豆子", "善逸", "蝴蝶", "炼狱", "无一郎"],
 }
 
 FAMILY_DEFAULTS = {
     "naruto": ["宇智波鼬", "漩涡鸣人", "宇智波佐助", "春野樱", "日向雏田"],
     "jujutsu": ["五条悟", "宿傩", "虎杖悠仁", "伏黑甚尔", "乙骨忧太"],
-    "kimetsu": ["灶门炭治郎", "灶门祢豆子", "我妻善逸", "蝴蝶忍", "炼狱杏寿郎"],
+    "kimetsu": ["灶门炭治郎", "灶门祢豆子", "我妻善逸", "蝴蝶忍", "炼狱杏寿郎", "时透无一郎"],
+}
+
+NON_ROLE_PHRASES = {
+    "真人": ["引流真人", "真人跳", "真人试玩", "真人实拍", "真人拍摄", "真人素材"],
 }
 
 def get_date_subdir(date_str):
@@ -430,6 +447,10 @@ def _match_role_from_text(text, preferred_family=None, allow_fuzzy=False):
             alias_norm = _normalize_role_text(alias)
             if not alias_norm:
                 continue
+            if alias_norm in NON_ROLE_PHRASES:
+                phrase_hit = any(_normalize_role_text(phrase) in normalized for phrase in NON_ROLE_PHRASES[alias_norm])
+                if phrase_hit:
+                    continue
             idx = normalized.find(alias_norm)
             if idx >= 0:
                 candidates.append((idx, -len(alias_norm), profile))
@@ -893,6 +914,57 @@ def _eligible_source_names(results):
             names.append(name)
     return names
 
+def _normalize_user_filter(user_filter):
+    if not user_filter:
+        return None
+    value = str(user_filter).strip().upper()
+    return value or None
+
+def _filter_names_by_user(names, user_filter):
+    user_filter = _normalize_user_filter(user_filter)
+    if not user_filter:
+        return list(names)
+    filtered = []
+    for name in names:
+        parsed = parse_filename(name)
+        if parsed and parsed["user_code"].upper() == user_filter:
+            filtered.append(name)
+    return filtered
+
+def _result_matches_user(item, user_filter):
+    user_filter = _normalize_user_filter(user_filter)
+    if not user_filter:
+        return True
+    parsed = parse_filename(item.get("name", ""))
+    return bool(parsed and parsed["user_code"].upper() == user_filter)
+
+def _parse_option_value(flag):
+    if flag not in sys.argv:
+        return None
+    idx = sys.argv.index(flag)
+    if idx + 1 >= len(sys.argv):
+        return None
+    value = sys.argv[idx + 1]
+    if value.startswith("--"):
+        return None
+    return value
+
+def _chief_all_users_authorized():
+    return os.environ.get("OPENCLAW_CHIEF_INSTANCE") == "18789"
+
+def _all_users_requested():
+    return "--all-users" in sys.argv or "--confirm-all-users" in sys.argv
+
+def _validate_user_scope(command_name, user_filter):
+    user_filter = _normalize_user_filter(user_filter)
+    if user_filter:
+        return True, None
+    if "--all-users" in sys.argv and "--confirm-all-users" in sys.argv and _chief_all_users_authorized():
+        return True, None
+    if _all_users_requested() and not _chief_all_users_authorized():
+        return False, f"{command_name} 全员模式只允许 18789 主实例授权环境执行"
+    return False, f"{command_name} 必须提供 --user USER；全员模式需 18789 主实例环境 + --all-users --confirm-all-users"
+
 def _missing_sequences(names):
     groups = {}
     for name in names:
@@ -958,23 +1030,30 @@ def _infer_min_output_seq_for_source(video_name, parsed):
 
     return max(1, floor)
 
-def run_batch_pipeline(prefix, dry_run=False):
+def run_batch_pipeline(prefix, dry_run=False, user_filter=None):
     batch_start = time.monotonic()
-    _log_event("batch_start", prefix=prefix, dry_run=dry_run)
+    user_filter = _normalize_user_filter(user_filter)
+    _log_event("batch_start", prefix=prefix, dry_run=dry_run, user_filter=user_filter)
     results, err = search_videos(prefix)
     if err:
         _log_event("batch_failed", prefix=prefix, stage="search", error=err)
         return {"success": False, "error": err}
 
-    names = _eligible_source_names(results)
-    skipped = [v.get("name", "") for v in results if is_generated_vertical_name(v.get("name", ""))]
+    all_names = _eligible_source_names(results)
+    names = _filter_names_by_user(all_names, user_filter)
+    skipped = [
+        v.get("name", "") for v in results
+        if _result_matches_user(v, user_filter) and is_generated_vertical_name(v.get("name", ""))
+    ]
     missing = _missing_sequences(names)
     seq_floors = _build_batch_seq_floors(names)
     if dry_run:
         return {
             "success": True,
             "prefix": prefix,
+            "user_filter": user_filter,
             "total": len(results),
+            "eligible_all_users": len(all_names),
             "eligible": len(names),
             "skipped_vertical": len(skipped),
             "missing_sequences": missing,
@@ -986,7 +1065,7 @@ def run_batch_pipeline(prefix, dry_run=False):
     total = len(names)
     for index, name in enumerate(names, start=1):
         item_start = time.monotonic()
-        _log_event("batch_item_start", prefix=prefix, index=index, total=total, name=name)
+        _log_event("batch_item_start", prefix=prefix, user_filter=user_filter, index=index, total=total, name=name)
         parsed = parse_filename(name)
         min_output_seq = seq_floors.get((parsed["date"], parsed["user_code"]), 1) if parsed else 1
         result = full_pipeline(name, min_output_seq=min_output_seq)
@@ -995,6 +1074,7 @@ def run_batch_pipeline(prefix, dry_run=False):
             _log_event(
                 "batch_item_done",
                 prefix=prefix,
+                user_filter=user_filter,
                 index=index,
                 total=total,
                 name=name,
@@ -1006,6 +1086,7 @@ def run_batch_pipeline(prefix, dry_run=False):
             _log_event(
                 "batch_item_failed",
                 prefix=prefix,
+                user_filter=user_filter,
                 index=index,
                 total=total,
                 name=name,
@@ -1015,6 +1096,7 @@ def run_batch_pipeline(prefix, dry_run=False):
     _log_event(
         "batch_done",
         prefix=prefix,
+        user_filter=user_filter,
         processed=len(ok),
         failed=len(fail),
         missing=len(missing),
@@ -1024,7 +1106,9 @@ def run_batch_pipeline(prefix, dry_run=False):
     return {
         "success": len(fail) == 0 and len(missing) == 0,
         "prefix": prefix,
+        "user_filter": user_filter,
         "total": len(results),
+        "eligible_all_users": len(all_names),
         "eligible": len(names),
         "processed": len(ok),
         "failed": len(fail),
@@ -1033,6 +1117,147 @@ def run_batch_pipeline(prefix, dry_run=False):
         "processed_list": ok,
         "failed_list": fail,
         "skipped_list": skipped
+    }
+
+def _parse_anchor_date(value):
+    if not value:
+        return datetime.now()
+    raw = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%y%m%d"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"无法解析日期: {value}")
+
+def _week_dates(anchor=None):
+    anchor = _parse_anchor_date(anchor or os.getenv("BACKSTAGE_WEEK_ANCHOR_DATE"))
+    start = anchor - timedelta(days=anchor.weekday())
+    days = (anchor.date() - start.date()).days + 1
+    return [start + timedelta(days=i) for i in range(days)]
+
+def _date_prefixes_for_search(day):
+    return [day.strftime("%y%m%d"), day.strftime("%Y%m%d")]
+
+def run_week_pipeline(dry_run=False, user_filter=None):
+    """Run this calendar week's backstage pipeline without relying on an LLM to guess dates."""
+    batch_start = time.monotonic()
+    user_filter = _normalize_user_filter(user_filter)
+    dates = _week_dates()
+    week_start = dates[0].strftime("%Y-%m-%d")
+    week_end = dates[-1].strftime("%Y-%m-%d")
+    week_date_codes = {day.strftime("%y%m%d") for day in dates}
+    searched_prefixes = []
+    search_errors = []
+    by_name = {}
+
+    _log_event(
+        "week_start",
+        dry_run=dry_run,
+        user_filter=user_filter,
+        week_start=week_start,
+        week_end=week_end,
+    )
+
+    for day in dates:
+        for prefix in _date_prefixes_for_search(day):
+            results, err = search_videos(prefix)
+            count = len(results) if results else 0
+            searched_prefixes.append({"prefix": prefix, "count": count, "error": err})
+            if err:
+                search_errors.append({"prefix": prefix, "error": err})
+                continue
+            for item in results or []:
+                name = item.get("name", "")
+                parsed = parse_filename(name)
+                if parsed and parsed["date"] in week_date_codes:
+                    by_name[name] = item
+
+    all_results = list(by_name.values())
+    all_names = _eligible_source_names(all_results)
+    names = _filter_names_by_user(all_names, user_filter)
+    skipped = [
+        v.get("name", "") for v in all_results
+        if _result_matches_user(v, user_filter) and is_generated_vertical_name(v.get("name", ""))
+    ]
+    missing = _missing_sequences(names)
+    seq_floors = _build_batch_seq_floors(names)
+
+    if dry_run:
+        return {
+            "success": len(search_errors) == 0,
+            "mode": "week-pipeline-dry-run",
+            "week_start": week_start,
+            "week_end": week_end,
+            "user_filter": user_filter,
+            "searched_prefixes": searched_prefixes,
+            "search_errors": search_errors,
+            "eligible_all_users": len(all_names),
+            "eligible": len(names),
+            "skipped_vertical": len(skipped),
+            "missing_sequences": missing,
+            "seq_floors": {f"{date}{user}": floor for (date, user), floor in sorted(seq_floors.items())},
+            "todo": names,
+        }
+
+    ok, fail = [], []
+    total = len(names)
+    for index, name in enumerate(names, start=1):
+        item_start = time.monotonic()
+        _log_event("week_item_start", user_filter=user_filter, index=index, total=total, name=name)
+        parsed = parse_filename(name)
+        min_output_seq = seq_floors.get((parsed["date"], parsed["user_code"]), 1) if parsed else 1
+        result = full_pipeline(name, min_output_seq=min_output_seq)
+        if result.get("success"):
+            ok.append({"name": name, "vertical": result.get("vertical"), "reused": result.get("reused_existing", False)})
+            _log_event(
+                "week_item_done",
+                user_filter=user_filter,
+                index=index,
+                total=total,
+                name=name,
+                reused=bool(result.get("reused_existing", False)),
+                seconds=round(time.monotonic() - item_start, 1),
+            )
+        else:
+            fail.append({"name": name, "error": result.get("error", "unknown")})
+            _log_event(
+                "week_item_failed",
+                user_filter=user_filter,
+                index=index,
+                total=total,
+                name=name,
+                error=result.get("error", "unknown"),
+                seconds=round(time.monotonic() - item_start, 1),
+            )
+
+    _log_event(
+        "week_done",
+        user_filter=user_filter,
+        processed=len(ok),
+        failed=len(fail),
+        missing=len(missing),
+        search_errors=len(search_errors),
+        seconds=round(time.monotonic() - batch_start, 1),
+    )
+
+    return {
+        "success": len(search_errors) == 0 and len(fail) == 0 and len(missing) == 0,
+        "mode": "week-pipeline",
+        "week_start": week_start,
+        "week_end": week_end,
+        "user_filter": user_filter,
+        "searched_prefixes": searched_prefixes,
+        "search_errors": search_errors,
+        "eligible_all_users": len(all_names),
+        "eligible": len(names),
+        "processed": len(ok),
+        "failed": len(fail),
+        "skipped_vertical": len(skipped),
+        "missing_sequences": missing,
+        "processed_list": ok,
+        "failed_list": fail,
+        "skipped_list": skipped,
     }
 
 def download_single(video_name):
@@ -1172,10 +1397,15 @@ def download_single(video_name):
 
 def _get_tenant_token():
     """获取飞书 tenant access token（使用 requests 避免代理缓存问题）"""
+    if FEISHU_ACCESS_TOKEN:
+        return FEISHU_ACCESS_TOKEN
+    if not FEISHU_APP_ID or not FEISHU_APP_SECRET:
+        _log_event("feishu_credentials_missing", required="BACKSTAGE_FEISHU_APP_ID/BACKSTAGE_FEISHU_APP_SECRET")
+        return ""
     try:
         resp = requests.post(
             "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-            json={"app_id": "cli_a938d27bfc78dced", "app_secret": "zISGY2UlMakJKK9z82j0AblZieQV8vk0"},
+            json={"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET},
             timeout=10
         )
         result = resp.json()
@@ -1194,6 +1424,8 @@ def _bitable_check_exists(original_name, token):
 
     返回：record_id 或 None
     """
+    if not BITABLE_APP_TOKEN or not BITABLE_TABLE_ID:
+        return None
     parsed = parse_filename(original_name)
 
     # 策略1：精确原命名匹配
@@ -1240,6 +1472,9 @@ def write_to_bitable(original_name, video_link, status, ip_name="", user="", ver
     幂等写入：已存在则自动更新（而非静默跳过），确保链接始终同步。
     """
     from datetime import datetime
+    if not BITABLE_APP_TOKEN or not BITABLE_TABLE_ID:
+        print(f"[write_to_bitable] ⏭️ 未配置 BITABLE_APP_TOKEN/BITABLE_TABLE_ID，跳过写表 [{original_name}]")
+        return False
     token = _get_tenant_token()
     if not token:
         print(f"[write_to_bitable] ❌ 无法获取 tenant token，跳过写表 [{original_name}]")
@@ -1506,19 +1741,40 @@ def full_pipeline(video_name, min_output_seq=None):
 
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "用法: download.py '视频名' | --search '前缀' | --download-prefix '前缀' | --pipeline '视频名' | --batch-pipeline '前缀'"}))
+        print(json.dumps({"error": "用法: download.py '视频名' | --search '前缀' | --download-prefix '前缀' | --pipeline '视频名' | --batch-pipeline '前缀' | --week-pipeline"}))
         return
 
     arg1 = sys.argv[1]
     dry_run = "--dry-run" in sys.argv
+    user_filter = _parse_option_value("--user")
+    allowed_flags = {"--dry-run", "--user", "--all-users", "--confirm-all-users"}
+    unknown_flags = [
+        arg for i, arg in enumerate(sys.argv[2:], start=2)
+        if arg.startswith("--")
+        and arg not in allowed_flags
+        and not (i > 0 and sys.argv[i - 1] == "--user")
+    ]
+    if unknown_flags:
+        print(json.dumps({"success": False, "error": f"未知参数: {', '.join(unknown_flags)}"}, ensure_ascii=False))
+        return
+    if "--user" in sys.argv and not user_filter:
+        print(json.dumps({"success": False, "error": "请提供用户代码，如 --user TM"}, ensure_ascii=False))
+        return
+    if user_filter and _all_users_requested():
+        print(json.dumps({"success": False, "error": "--user 不能与 --all-users/--confirm-all-users 同时使用"}, ensure_ascii=False))
+        return
 
     if arg1 == '--download-prefix':
         prefix = sys.argv[2] if len(sys.argv) > 2 else ''
         if not prefix:
             print(json.dumps({"error": "请提供前缀，如 --download-prefix 260421"}))
             return
+        ok_scope, scope_error = _validate_user_scope("--download-prefix", user_filter)
+        if not ok_scope:
+            print(json.dumps({"success": False, "error": scope_error}, ensure_ascii=False))
+            return
         if dry_run:
-            result = run_batch_pipeline(prefix, dry_run=True)
+            result = run_batch_pipeline(prefix, dry_run=True, user_filter=user_filter)
             result["mode"] = "download-prefix-dry-run"
             print(json.dumps(result, ensure_ascii=False))
             return
@@ -1529,12 +1785,14 @@ def main():
         downloaded, skipped = [], []
         for v in results:
             name = v.get("name", "")
+            if not _result_matches_user(v, user_filter):
+                continue
             if is_generated_vertical_name(name):
                 skipped.append(name); continue
             success, message, path = download_single(name)
             if success:
                 downloaded.append({"name": name, "path": str(path)})
-        print(json.dumps({"success": True, "total": len(results), "downloaded": len(downloaded), "skipped_vertical": len(skipped), "downloaded_list": downloaded, "skipped_list": skipped}, ensure_ascii=False))
+        print(json.dumps({"success": True, "total": len(results), "user_filter": _normalize_user_filter(user_filter), "downloaded": len(downloaded), "skipped_vertical": len(skipped), "downloaded_list": downloaded, "skipped_list": skipped}, ensure_ascii=False))
 
     elif arg1 == '--search':
         prefix = sys.argv[2] if len(sys.argv) > 2 else ''
@@ -1551,7 +1809,19 @@ def main():
         if not prefix:
             print(json.dumps({"error": "请提供前缀，如 --batch-pipeline 260421"}))
             return
-        result = run_batch_pipeline(prefix, dry_run=dry_run)
+        ok_scope, scope_error = _validate_user_scope("--batch-pipeline", user_filter)
+        if not ok_scope:
+            print(json.dumps({"success": False, "error": scope_error}, ensure_ascii=False))
+            return
+        result = run_batch_pipeline(prefix, dry_run=dry_run, user_filter=user_filter)
+        print(json.dumps(result, ensure_ascii=False))
+
+    elif arg1 == '--week-pipeline':
+        ok_scope, scope_error = _validate_user_scope("--week-pipeline", user_filter)
+        if not ok_scope:
+            print(json.dumps({"success": False, "error": scope_error}, ensure_ascii=False))
+            return
+        result = run_week_pipeline(dry_run=dry_run, user_filter=user_filter)
         print(json.dumps(result, ensure_ascii=False))
 
     else:

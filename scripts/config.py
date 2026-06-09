@@ -19,9 +19,12 @@ API_BASE = "http://adopenplatform.rongyao666.com/app/data/api/ApiGetJrttVideoByC
 IPv6_ROOT = os.getenv("IPv6_ROOT", "http://[2408:8256:4c87:f19c::c42]:9092")
 
 # ============ 飞书配置 ============
-BITABLE_APP_TOKEN = os.getenv("BITABLE_APP_TOKEN", "SYP1b0qvOaY60xszqLycOK9PnNg")
-BITABLE_TABLE_ID = os.getenv("BITABLE_TABLE_ID", "tblewZ4BB4tHPnFC")
-FEISHU_ACCESS_TOKEN = os.getenv("FEISHU_ACCESS_TOKEN", "")
+# 写表默认禁用；如需临时写表，必须通过环境变量显式指定目标表和凭据。
+BITABLE_APP_TOKEN = os.getenv("BACKSTAGE_BITABLE_APP_TOKEN") or os.getenv("BITABLE_APP_TOKEN", "")
+BITABLE_TABLE_ID = os.getenv("BACKSTAGE_BITABLE_TABLE_ID") or os.getenv("BITABLE_TABLE_ID", "")
+FEISHU_ACCESS_TOKEN = os.getenv("BACKSTAGE_FEISHU_ACCESS_TOKEN") or os.getenv("FEISHU_ACCESS_TOKEN", "")
+FEISHU_APP_ID = os.getenv("BACKSTAGE_FEISHU_APP_ID") or os.getenv("FEISHU_APP_ID", "")
+FEISHU_APP_SECRET = os.getenv("BACKSTAGE_FEISHU_APP_SECRET") or os.getenv("FEISHU_APP_SECRET", "")
 
 # ============ Vision API 配置 ============
 VISION_API_KEY = os.getenv("VISION_API_KEY", "")

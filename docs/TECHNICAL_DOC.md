@@ -1,6 +1,6 @@
 # backstage-video-download-v2 技术文档
 
-> 适用版本：v2.2.0 | 更新日期：2026-05-11
+> 适用版本：v2.9.0 | 更新日期：2026-06-10
 > 本文档描述完整的改竖工作流，供其他实例参照执行
 
 ---
@@ -54,8 +54,10 @@ export IPv6_ROOT="http://[2408:8256:4c87:f19c::c42]:9092"
 export VISION_API_URL="http://localhost:11434/api/generate"
 
 # 飞书配置（写表用）
-export BITABLE_APP_TOKEN="SYP1b0qvOaY60xszqqLycOK9PnNg"
-export BITABLE_TABLE_ID="tblewZ4BB4tHPnFC"
+export BACKSTAGE_BITABLE_APP_TOKEN="<bitable_app_token>"
+export BACKSTAGE_BITABLE_TABLE_ID="<bitable_table_id>"
+export BACKSTAGE_FEISHU_APP_ID="<feishu_app_id>"
+export BACKSTAGE_FEISHU_APP_SECRET="<feishu_app_secret>"
 ```
 
 ### 2.3 NAS 目录结构
@@ -81,14 +83,18 @@ export BITABLE_TABLE_ID="tblewZ4BB4tHPnFC"
 ### 3.1 命令行接口
 
 ```bash
-# ① 搜索：确认当天有多少条视频
+# ① 搜索：确认某个前缀有多少条视频
 python3 download.py --search "260511"
 
-# ② 下载：批量下载横版视频（自动跳过含"改竖"的文件）
-python3 download.py --download-prefix "260511"
+# ② 单日批次预览：必须带用户代码，避免跨员工误处理
+python3 download.py --batch-pipeline "260511" --user JR --dry-run
 
-# ③ 改竖流水线：对单条视频执行下载→改竖一体化（写表已禁用）
-python3 download.py --pipeline "260511JR1-挨打回血卡卡西-原创-BY"
+# ③ 单日批次改竖：搜索→去重→下载→改竖一体化
+python3 download.py --batch-pipeline "260511" --user JR
+
+# ④ 本周后台视频改竖：自然语言“将本周后台的视频改竖”必须用这个
+python3 download.py --week-pipeline --user JR --dry-run
+python3 download.py --week-pipeline --user JR
 ```
 
 ### 3.2 日期格式
@@ -112,9 +118,31 @@ python3 download.py --pipeline "260511JR1-挨打回血卡卡西-原创-BY"
 
 ---
 
-## 四、完整执行流程（标准三步）
+## 四、完整执行流程
 
-> 按此顺序执行，不跳步。
+> 按此顺序执行，不跳步。员工实例必须使用自身绑定的用户代码；不要把脚本命令暴露给普通员工。
+
+### 4.1 本周后台视频改竖
+
+收到“将本周后台的视频改竖 / 本周后台视频 / 这周后台都改竖”时，必须先跑本周 dry-run：
+
+```bash
+python3 download.py --week-pipeline --user JR --dry-run
+```
+
+检查返回值：
+
+- `searched_prefixes` 必须覆盖本周一到今天，每天同时包含 `YYMMDD` 和 `YYYYMMDD` 两种前缀。
+- `todo` 是本周该用户待处理视频清单，不允许只查当天或最近一两天后回复“后台没有”。
+- 只有 `searched_prefixes` 全部完成且 `todo=[]` 时，才允许报告本周后台没有该用户待处理视频。
+
+确认后执行正式本周改竖：
+
+```bash
+python3 download.py --week-pipeline --user JR
+```
+
+### 4.2 单日批次改竖
 
 ### Step 1：搜索确认数量
 
@@ -132,32 +160,32 @@ python3 download.py --search "260511"
 ### Step 2：批量下载
 
 ```bash
-python3 download.py --download-prefix "260511"
+python3 download.py --batch-pipeline "260511" --user JR --dry-run
 ```
 
 - 自动跳过文件名含"改竖"的视频
 - 自动跳过已是竖版（720×1280）的视频
-- 返回下载数量和路径列表
+- 返回该用户 `todo`、`missing_sequences`、`seq_floors`
 
-### Step 3：逐条执行改竖
-
-对每条视频运行 `--pipeline`：
+### Step 3：执行批次改竖
 
 ```bash
-python3 download.py --pipeline "260511JR1-挨打回血卡卡西-原创-BY"
+python3 download.py --batch-pipeline "260511" --user JR
 ```
 
-返回：
+脚本会逐条运行 `--pipeline`，返回：
+
 ```json
 {
   "success": true,
-  "downloaded": "/Volumes/美术AI龙虾/JR/后台下载/2026-05-11/260511JR1-...mp4",
-  "vertical": "/Volumes/美术AI龙虾/JR/后台下载/2026-05-11/260511JR2-龙虾改竖挨打回血卡卡西-原创-BY.mp4",
-  "link": "http://[IPv6]:9092/JR/后台下载/2026-05-11/260511JR2-龙虾改竖挨打回血卡卡西-原创-BY.mp4"
+  "prefix": "260511",
+  "processed": 9,
+  "failed": 0,
+  "missing_sequences": []
 }
 ```
 
-**逐条执行好处：** 每条独立，可追踪、可定位异常。
+**保留单条入口：** 单条返工时仍可使用 `python3 download.py --pipeline "完整视频名"`。
 
 ---
 
@@ -287,9 +315,8 @@ assets/
 
 ### 8.1 目标表格
 
-- **App Token**：`SYP1b0qvOaY60xszqLycOK9PnNg`
-- **Table ID**：`tblewZ4BB4tHPnFC`
-- **链接**：`https://fc4dpykqzg.feishu.cn/base/SYP1b0qvOaY60xszqLycOK9PnNg?table=tblewZ4BB4tHPnFC&view=vew9Tu0iOX`
+- 写表默认禁用，不在 Skill 文件中保存固定 App Token、Table ID 或 Base 链接。
+- 需要临时写表时，通过 `BACKSTAGE_BITABLE_APP_TOKEN`、`BACKSTAGE_BITABLE_TABLE_ID` 和飞书应用环境变量显式配置。
 
 ### 8.2 字段映射
 
@@ -309,7 +336,7 @@ def _retry_write_to_bitable(
     video_name, ipv6_link, status,
     ip_name, user, final_name, cover_uncertain=False
 ):
-    # 1. 获取 tenant_access_token（appId + appSecret）
+    # 1. 从环境读取飞书应用凭据并获取 tenant_access_token
     # 2. 构造 record 写入表格
     # 3. 超时重试 3 次
     # 4. 写表已禁用：输出 ⏭️ skip 提示，不实际调用 API
@@ -321,8 +348,10 @@ def _retry_write_to_bitable(
 
 执行完一批改竖任务后，逐一核查：
 
-- [ ] `--search` 数量 = `--download-prefix` 下载数量（除去含"改竖"跳过项）
-- [ ] 每条 `--pipeline` 返回 `success: true`
+- [ ] “本周”任务必须先检查 `--week-pipeline --dry-run` 的 `searched_prefixes`
+- [ ] 单用户任务必须带 `--user USER`，dry-run 的 `todo` 只能包含目标用户
+- [ ] `eligible` 与 `todo` 数量一致，`failed=0`
+- [ ] `missing_sequences=[]`；若不为空，必须报告缺号，不得说后台没有
 - [ ] 成品文件存在于目标目录（720×1280）
 - [ ] 异常条目记录到 `memory/errors.md`
 - [ ] 手动写入飞书表格（写表禁用期间）
@@ -346,6 +375,9 @@ def _retry_write_to_bitable(
 ### Q5：成品序号跳号了怎么办？
 **A：** `get_next_seq()` 每次全量扫描目录，取 max+1，不会跳号。检查是否有多实例同时写入。
 
+### Q6：小龙虾说“本周后台没有视频”，怎么判断它有没有漏查？
+**A：** 要看 `--week-pipeline --dry-run` 的 JSON。只有 `searched_prefixes` 覆盖本周一到今天、`search_errors=[]`、且目标用户 `todo=[]` 时，才可信。否则必须继续排查，不能直接回复没有。
+
 ---
 
 ## 十一、调用示例（直接复制使用）
@@ -356,18 +388,23 @@ cd ~/.agents/skills/backstage-video-download-v2/scripts
 python3 download.py --pipeline "260511JR1-挨打回血卡卡西-原创-BY"
 ```
 
-### 标准批次执行（先搜索确认，再逐条改竖）
+### 本周后台视频改竖（自然语言任务首选）
 ```bash
-# Step 1：确认数量
+cd ~/.agents/skills/backstage-video-download-v2/scripts
+python3 download.py --week-pipeline --user JR --dry-run
+python3 download.py --week-pipeline --user JR
+```
+
+### 标准单日批次执行
+```bash
+# Step 1：确认前缀总数
 python3 download.py --search "260511"
 
-# Step 2：下载（可跳过，直接改竖即可，--pipeline 包含下载）
-python3 download.py --download-prefix "260511"
+# Step 2：预览目标用户待处理视频
+python3 download.py --batch-pipeline "260511" --user JR --dry-run
 
-# Step 3：逐条改竖
-for name in "JR1" "TM1" "TM2" "TM6" "TM7" "TM8" "ZL1" "ZL2" "ZL3"; do
-  python3 download.py --pipeline "$name的完整命名"
-done
+# Step 3：执行该用户批次
+python3 download.py --batch-pipeline "260511" --user JR
 ```
 
 ### 手动批量脚本（复制 batch_pipeline.py 改写）
@@ -396,10 +433,12 @@ for v in videos:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| v2.9.0 | 2026-06-10 | 新增 `--week-pipeline` 本周入口，逐日双前缀搜索，防止漏扫后误报后台没有 |
+| v2.8.1 | 2026-06-10 | `--batch-pipeline` / `--download-prefix` 强制用户隔离，全员模式仅 18789 授权 |
 | v2.2.0 | 2026-04-28 | 标准批处理流程 + 竖版原视频判断标准 + 用户代码→IP映射表 |
 | v2.1.0 | 2026-04-27 | 重写 download.py，集成 AI 角色识别 |
 | v1.0.0 | 早期 | 基础下载功能 |
 
 ---
 
-*文档生成时间：2026-05-11 | 基于 Dw虾 实例执行经验整理*
+*文档更新时间：2026-06-10 | 基于 Dw虾 实例执行经验整理*

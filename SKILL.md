@@ -1,17 +1,17 @@
 ---
 name: backstage-video-download-v2
-description: 从广告平台 API 批量下载视频，支持前缀搜索、断点续传，每日定时任务。下载后自动进行改竖处理（AI 角色识别 + 贴图匹配 + handler.py 执行 + 按原视频日期归档到 /Volumes/美术AI龙虾/{用户代码}/后台下载/{YYYY-MM-DD}/ 目录）。
+description: "后台视频下载与稳定改竖 Skill。Use when the user asks to download videos from the advertising/backstage platform, search by filename prefix, resume batch downloads, run daily backstage downloads, process downloaded videos through AI IP/character recognition, match overlay assets, run handler.py for horizontal-to-vertical conversion, or archive outputs under /Volumes/美术AI龙虾/{用户代码}/后台下载/{YYYY-MM-DD}/. Trigger phrases include 下载视频、后台下载、广告平台视频、批量下载、断点续传、下载后改竖. Do not use for Douyin links; use douyin-video. Do not use for 荣耀后台数据 CSV export; use rongyao-houtai-export."
 metadata:
   short-description: 后台视频下载与稳定改竖
-  version: v2.7.0
-  date: 2026-06-04
+  version: v2.9.0
+  date: 2026-06-10
   trigger-keywords:
     - 下载视频
     - 后台下载
     - 广告平台视频
 ---
 
-# backstage-video-download v2.7.0 Skill
+# backstage-video-download v2.9.0 Skill
 
 ## 功能概述
 
@@ -23,6 +23,9 @@ metadata:
 ## ⚠️ 脚本路径说明
 
 > 实际生效路径：**`~/.agents/skills/backstage-video-download-v2/scripts/`**
+> v2.9.0 已加入：`--week-pipeline` 本周后台视频改竖入口，按本周一到今天逐日双前缀搜索并汇总，避免漏扫后误报“后台没有”。
+> v2.8.1 已加入：`--batch-pipeline` 和 `--download-prefix` 默认必须提供 `--user USER`；全员模式只允许 18789 主实例授权环境并同时提供 `--all-users --confirm-all-users`。
+> v2.8.0 已加入：`--batch-pipeline/--download-prefix --dry-run` 支持 `--user USER` 过滤；未知参数会直接报错，避免静默跨员工处理。
 > v2.7.0 已加入：改竖成品序号强制顺延，不允许与同批原始素材同号。
 > v2.6.0 已加入：下载直连优先、1MB 分块、`.part` 原子落盘、断流重试、批次结构化耗时日志。
 > v2.5.0 已加入：AI 角色名纠错、错词映射、贴图库优先匹配，尽量避免落到通用贴图。
@@ -44,25 +47,41 @@ export BACKSTAGE_DOWNLOAD_TOTAL_TIMEOUT=900
 export BACKSTAGE_DOWNLOAD_MIN_RATE_BPS=32768
 ```
 
-## 标准批处理流程（推荐）
+## 标准批处理流程（仅授权自动任务）
 
-> 小龙虾自动任务优先用一键批次入口。它会搜索、去重、逐条改竖、复用已有成品，并输出缺号和失败列表。
+> 员工实例不要把脚本命令暴露给普通员工。收到“改竖/下载/处理视频”请求时，只按该实例绑定的员工代码执行。批处理入口用于授权自动任务和主实例运维，不作为员工自助脚本说明。
 
 ```bash
-python3 download.py --batch-pipeline "260601"
+python3 download.py --batch-pipeline "260601" --user TM
 ```
 
-### 人工检查流程
+### 授权运维检查流程
 
 ```
 ① python3 download.py --search "260601"
    → 确认 API 返回数量
 
-② python3 download.py --batch-pipeline "260601" --dry-run
+② python3 download.py --batch-pipeline "260601" --user TM --dry-run
    → 预览 eligible、skipped、missing_sequences
 
-③ python3 download.py --batch-pipeline "260601"
+③ python3 download.py --batch-pipeline "260601" --user TM
    → 完整执行，返回 processed_list / failed_list / missing_sequences
+```
+
+收到“本周后台的视频改竖 / 本周后台视频 / 这周后台都改竖”时，不要猜日期，不要只查当天或最近一两天。必须走本周入口：
+
+```bash
+python3 download.py --week-pipeline --user TM --dry-run
+python3 download.py --week-pipeline --user TM
+```
+
+`--week-pipeline` 会从本周一到今天逐日搜索，并同时尝试 `YYMMDD` 与 `YYYYMMDD` 两种前缀。只有 `searched_prefixes` 全部检查完且 `todo=[]` 时，才允许说本周后台没有该用户待处理视频。
+
+全员处理只允许 18789 主实例授权环境执行：
+
+```bash
+OPENCLAW_CHIEF_INSTANCE=18789 python3 download.py --batch-pipeline "260601" --all-users --confirm-all-users --dry-run
+OPENCLAW_CHIEF_INSTANCE=18789 python3 download.py --batch-pipeline "260601" --all-users --confirm-all-users
 ```
 
 ### 批次执行检查清单（必做）
@@ -74,7 +93,10 @@ python3 download.py --batch-pipeline "260601"
 - [ ] 同一原视频重复跑时必须返回 reused_existing=True，不再新生成成品
 - [ ] 日志出现 `batch_done` 且 `failed=0`、`missing=0`
 - [ ] 异常条目记入 memory/errors.md
-- [ ] **遍历所有用户代码确认没有漏掉某用户的某批次**
+- [ ] **处理单个员工时必须带 `--user USER`，dry-run 的 `todo` 必须逐条确认只含目标用户代码**
+- [ ] **处理“本周”必须先看 `--week-pipeline --dry-run` 的 `searched_prefixes`，不能只按今天/最近几天猜测**
+- [ ] **跨员工批处理必须分用户执行，不允许只按日期前缀一次性跑全员，除非东玥/18789 主实例明确授权**
+- [ ] **不要向员工提供脚本命令作为便利入口；员工只提交自然语言任务，由实例按绑定用户执行**
 
 ## 脚本速查
 
@@ -84,22 +106,29 @@ python3 download.py --batch-pipeline "260601"
 | 改竖执行器 | `~/.agents/skills/backstage-video-download-v2/scripts/handler.py` |
 | 配置 | `~/.agents/skills/backstage-video-download-v2/scripts/config.py` |
 
-### download.py 参数
+### download.py 参数（授权运维参考，不面向员工）
 ```bash
 # 搜索（先用这个确认数量）
 python3 download.py --search "260529"
 
-# 下载当天（跳过含"改竖"的视频）
-python3 download.py --download-prefix "260529"
+# 下载当天某个员工
+python3 download.py --download-prefix "260529" --user TM
 
 # 单条完整流水线（下载→改竖，写表已禁用）
 python3 download.py --pipeline "260529D1-原生开局一辆车-原创"
 
 # 批次完整流水线（推荐给自动任务）
-python3 download.py --batch-pipeline "260529"
+python3 download.py --batch-pipeline "260529" --user TM
+
+# 本周完整流水线（自然语言“本周后台视频改竖”必须用这个）
+python3 download.py --week-pipeline --user TM --dry-run
+python3 download.py --week-pipeline --user TM
 
 # 预览批次，不下载不改竖
-python3 download.py --batch-pipeline "260529" --dry-run
+python3 download.py --batch-pipeline "260529" --user TM --dry-run
+
+# 全员批处理仅 18789 主实例授权环境允许
+OPENCLAW_CHIEF_INSTANCE=18789 python3 download.py --batch-pipeline "260529" --all-users --confirm-all-users --dry-run
 ```
 
 ## 竖版原视频判断标准
@@ -259,7 +288,7 @@ python3 download.py --batch-pipeline "260529" --dry-run
 | 伏黑惠, 惠 | `jujutsu/伏黑惠*` |
 | 冥冥 | `jujutsu/冥冥*` |
 | 夏油杰 | `jujutsu/夏油杰*` |
-| 真人 | `jujutsu/真人*` |
+| 真人 | `jujutsu/真人*`，但 `引流真人`、`真人跳`、`真人试玩`、`真人实拍`、`真人素材` 属于广告语，不按角色匹配 |
 
 #### 鬼灭角色（assets/kimetsu/）
 | 关键词 | 贴图 |
@@ -278,8 +307,13 @@ python3 download.py --batch-pipeline "260529" --dry-run
 | 堕姬 | `kimetsu/堕姬*` |
 | 香奈乎 | `kimetsu/香奈乎*`, `kimetsu/鬼灭-擦边-香奈乎*` |
 | 无惨 | `kimetsu/无惨*` |
-| 无一郎 | `kimetsu/无一郎*` |
+| 无一郎, 时透无一郎 | `kimetsu/无一郎*`, `kimetsu/时透无一郎*` |
 | 擦边（通用） | `kimetsu/鬼灭-擦边-*` |
+
+### 广告语歧义规则
+
+- `引流真人`、`真人跳`、`真人试玩`、`真人实拍`、`真人素材` 中的 `真人` 是“真实人物/真人素材”语义，不自动匹配咒术回战角色「真人」。
+- 文件名出现 `无一郎` 时优先使用鬼灭 `无一郎/时透无一郎` 贴图，不交给 AI 视觉猜角色。
 
 **兜底：** 无匹配 → `fallback/` 目录随机选一张（标记待确认）
 
@@ -305,15 +339,20 @@ python3 download.py --batch-pipeline "260529" --dry-run
 
 ## 目标表
 
-- App Token：`SYP1b0qvOaY60xszqLycOK9PnNg`
-- Table ID：`tblewZ4BB4tHPnFC`
-- 链接：`https://fc4dpykqzg.feishu.cn/base/SYP1b0qvOaY60xszqLycOK9PnNg?table=tblewZ4BB4tHPnFC&view=vew9Tu0iOX`
+- 写表默认禁用，不在 Skill 中保存固定飞书表链接。
+- 如需临时启用写表，由运行环境显式提供 `BACKSTAGE_BITABLE_APP_TOKEN` 和 `BACKSTAGE_BITABLE_TABLE_ID`。
+- 飞书应用凭据由 `BACKSTAGE_FEISHU_APP_ID` / `BACKSTAGE_FEISHU_APP_SECRET` 或实例环境提供，禁止写入 Skill 文件。
 
 ## API 约束
 - 搜索只支持**前缀匹配**，描述文字搜不了
 - 日期格式：`YYMMDD`（260420 = 2026年4月20日）
 
 ## 版本记录
+
+### v2.9.0（2026-06-10）
+- 新增：`--week-pipeline`，按本周一到今天逐日执行后台搜索和改竖，避免自然语言“本周”被小龙虾只查单日
+- 新增：每个日期同时搜索 `YYMMDD` 和 `YYYYMMDD` 两种前缀，并在结果里返回 `searched_prefixes`
+- 修正：只有本周所有前缀都查完且目标用户 `todo=[]` 时，才允许报告“后台没有待处理视频”
 
 ### v2.7.0（2026-06-04）
 - 修正：改竖成品序号恢复顺延规则，`260604BY1/260604BY2` 的成品输出为 `260604BY3/260604BY4`
