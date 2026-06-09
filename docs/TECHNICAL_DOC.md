@@ -133,8 +133,9 @@ python3 download.py --week-pipeline --user JR --dry-run
 检查返回值：
 
 - `searched_prefixes` 必须覆盖本周一到今天，每天同时包含 `YYMMDD` 和 `YYYYMMDD` 两种前缀。
-- `todo` 是本周该用户待处理视频清单，不允许只查当天或最近一两天后回复“后台没有”。
-- 只有 `searched_prefixes` 全部完成且 `todo=[]` 时，才允许报告本周后台没有该用户待处理视频。
+- `todo` 是本周该用户待处理视频清单，来源包括后台 API 和本周本地目录中的横版源文件。
+- `eligible_from_local` / `local_only` 表示“后台当前搜不到但本地已下载”的补漏视频，必须执行，不允许说后台没有。
+- 只有 `searched_prefixes` 全部完成、`local_scan_errors=[]` 且 `todo=[]` 时，才允许报告本周没有该用户待处理视频。
 
 确认后执行正式本周改竖：
 
@@ -348,7 +349,7 @@ def _retry_write_to_bitable(
 
 执行完一批改竖任务后，逐一核查：
 
-- [ ] “本周”任务必须先检查 `--week-pipeline --dry-run` 的 `searched_prefixes`
+- [ ] “本周”任务必须先检查 `--week-pipeline --dry-run` 的 `searched_prefixes`、`eligible_from_local`、`local_only`、`local_scan_errors`
 - [ ] 单用户任务必须带 `--user USER`，dry-run 的 `todo` 只能包含目标用户
 - [ ] `eligible` 与 `todo` 数量一致，`failed=0`
 - [ ] `missing_sequences=[]`；若不为空，必须报告缺号，不得说后台没有
@@ -376,7 +377,7 @@ def _retry_write_to_bitable(
 **A：** `get_next_seq()` 每次全量扫描目录，取 max+1，不会跳号。检查是否有多实例同时写入。
 
 ### Q6：小龙虾说“本周后台没有视频”，怎么判断它有没有漏查？
-**A：** 要看 `--week-pipeline --dry-run` 的 JSON。只有 `searched_prefixes` 覆盖本周一到今天、`search_errors=[]`、且目标用户 `todo=[]` 时，才可信。否则必须继续排查，不能直接回复没有。
+**A：** 要看 `--week-pipeline --dry-run` 的 JSON。只有 `searched_prefixes` 覆盖本周一到今天、`search_errors=[]`、`local_scan_errors=[]`、且目标用户 `todo=[]` 时，才可信。若 `eligible_from_local>0` 或 `local_only` 非空，说明本地有遗留横版源文件要补跑。
 
 ---
 
@@ -433,7 +434,7 @@ for v in videos:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
-| v2.9.0 | 2026-06-10 | 新增 `--week-pipeline` 本周入口，逐日双前缀搜索，防止漏扫后误报后台没有 |
+| v2.9.0 | 2026-06-10 | 新增 `--week-pipeline` 本周入口，逐日双前缀搜索，并扫描本地遗留横版源文件，防止漏扫后误报没有 |
 | v2.8.1 | 2026-06-10 | `--batch-pipeline` / `--download-prefix` 强制用户隔离，全员模式仅 18789 授权 |
 | v2.2.0 | 2026-04-28 | 标准批处理流程 + 竖版原视频判断标准 + 用户代码→IP映射表 |
 | v2.1.0 | 2026-04-27 | 重写 download.py，集成 AI 角色识别 |

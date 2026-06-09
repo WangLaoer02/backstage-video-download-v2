@@ -1139,6 +1139,75 @@ def _week_dates(anchor=None):
 def _date_prefixes_for_search(day):
     return [day.strftime("%y%m%d"), day.strftime("%Y%m%d")]
 
+def _dedupe_names(names):
+    deduped = []
+    seen = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        deduped.append(name)
+    return deduped
+
+def _iter_week_local_dirs(dates, user_filter=None):
+    user_filter = _normalize_user_filter(user_filter)
+    if user_filter:
+        roots = [(user_filter, SAVE_DIR / user_filter / "后台下载")]
+    else:
+        roots = []
+        try:
+            for user_dir in sorted(SAVE_DIR.iterdir()):
+                backstage_dir = user_dir / "后台下载"
+                if user_dir.is_dir() and backstage_dir.exists():
+                    roots.append((user_dir.name, backstage_dir))
+        except Exception:
+            roots = []
+
+    for user_code, backstage_dir in roots:
+        for day in dates:
+            yield user_code, day, backstage_dir / day.strftime("%Y-%m-%d")
+
+def _local_week_source_scan(dates, user_filter=None):
+    """Find local week source videos that may no longer appear in backstage search."""
+    user_filter = _normalize_user_filter(user_filter)
+    week_date_codes = {day.strftime("%y%m%d") for day in dates}
+    names = []
+    vertical_originals = []
+    errors = []
+
+    for _user_code, _day, folder in _iter_week_local_dirs(dates, user_filter=user_filter):
+        if not folder.exists():
+            continue
+        for path in sorted(folder.glob("*.mp4")):
+            if "vertical_" in path.name:
+                continue
+            name = path.stem
+            parsed = parse_filename(name)
+            if not parsed:
+                errors.append({"path": str(path), "error": "unparseable_filename"})
+                continue
+            if parsed["date"] not in week_date_codes:
+                continue
+            if user_filter and parsed["user_code"].upper() != user_filter:
+                continue
+            if is_generated_vertical_name(path.name):
+                continue
+
+            ok, msg = _validate_video_file(str(path))
+            if not ok:
+                errors.append({"name": name, "path": str(path), "error": msg})
+                continue
+            if is_vertical_video(str(path)):
+                vertical_originals.append(name)
+                continue
+            names.append(name)
+
+    return {
+        "names": _dedupe_names(names),
+        "vertical_originals": _dedupe_names(vertical_originals),
+        "errors": errors,
+    }
+
 def run_week_pipeline(dry_run=False, user_filter=None):
     """Run this calendar week's backstage pipeline without relying on an LLM to guess dates."""
     batch_start = time.monotonic()
@@ -1175,17 +1244,30 @@ def run_week_pipeline(dry_run=False, user_filter=None):
 
     all_results = list(by_name.values())
     all_names = _eligible_source_names(all_results)
-    names = _filter_names_by_user(all_names, user_filter)
+    api_names = _filter_names_by_user(all_names, user_filter)
+    local_scan = _local_week_source_scan(dates, user_filter=user_filter)
+    local_names = local_scan["names"]
+    api_name_set = set(api_names)
+    local_only_names = [name for name in local_names if name not in api_name_set]
+    names = _dedupe_names(api_names + local_only_names)
     skipped = [
         v.get("name", "") for v in all_results
         if _result_matches_user(v, user_filter) and is_generated_vertical_name(v.get("name", ""))
     ]
     missing = _missing_sequences(names)
     seq_floors = _build_batch_seq_floors(names)
+    _log_event(
+        "week_local_scan",
+        user_filter=user_filter,
+        local_sources=len(local_names),
+        local_only=len(local_only_names),
+        vertical_originals=len(local_scan["vertical_originals"]),
+        errors=len(local_scan["errors"]),
+    )
 
     if dry_run:
         return {
-            "success": len(search_errors) == 0,
+            "success": len(search_errors) == 0 and len(local_scan["errors"]) == 0,
             "mode": "week-pipeline-dry-run",
             "week_start": week_start,
             "week_end": week_end,
@@ -1194,6 +1276,12 @@ def run_week_pipeline(dry_run=False, user_filter=None):
             "search_errors": search_errors,
             "eligible_all_users": len(all_names),
             "eligible": len(names),
+            "eligible_from_api": len(api_names),
+            "eligible_from_local": len(local_only_names),
+            "local_sources": local_names,
+            "local_only": local_only_names,
+            "local_vertical_originals": local_scan["vertical_originals"],
+            "local_scan_errors": local_scan["errors"],
             "skipped_vertical": len(skipped),
             "missing_sequences": missing,
             "seq_floors": {f"{date}{user}": floor for (date, user), floor in sorted(seq_floors.items())},
@@ -1238,11 +1326,12 @@ def run_week_pipeline(dry_run=False, user_filter=None):
         failed=len(fail),
         missing=len(missing),
         search_errors=len(search_errors),
+        local_scan_errors=len(local_scan["errors"]),
         seconds=round(time.monotonic() - batch_start, 1),
     )
 
     return {
-        "success": len(search_errors) == 0 and len(fail) == 0 and len(missing) == 0,
+        "success": len(search_errors) == 0 and len(local_scan["errors"]) == 0 and len(fail) == 0 and len(missing) == 0,
         "mode": "week-pipeline",
         "week_start": week_start,
         "week_end": week_end,
@@ -1251,6 +1340,12 @@ def run_week_pipeline(dry_run=False, user_filter=None):
         "search_errors": search_errors,
         "eligible_all_users": len(all_names),
         "eligible": len(names),
+        "eligible_from_api": len(api_names),
+        "eligible_from_local": len(local_only_names),
+        "local_sources": local_names,
+        "local_only": local_only_names,
+        "local_vertical_originals": local_scan["vertical_originals"],
+        "local_scan_errors": local_scan["errors"],
         "processed": len(ok),
         "failed": len(fail),
         "skipped_vertical": len(skipped),

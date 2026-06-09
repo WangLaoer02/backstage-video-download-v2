@@ -23,7 +23,7 @@ metadata:
 ## ⚠️ 脚本路径说明
 
 > 实际生效路径：**`~/.agents/skills/backstage-video-download-v2/scripts/`**
-> v2.9.0 已加入：`--week-pipeline` 本周后台视频改竖入口，按本周一到今天逐日双前缀搜索并汇总，避免漏扫后误报“后台没有”。
+> v2.9.0 已加入：`--week-pipeline` 本周后台视频改竖入口，按本周一到今天逐日双前缀搜索，并额外扫描本周本地目录中的横版源文件，避免漏扫后误报“后台没有”。
 > v2.8.1 已加入：`--batch-pipeline` 和 `--download-prefix` 默认必须提供 `--user USER`；全员模式只允许 18789 主实例授权环境并同时提供 `--all-users --confirm-all-users`。
 > v2.8.0 已加入：`--batch-pipeline/--download-prefix --dry-run` 支持 `--user USER` 过滤；未知参数会直接报错，避免静默跨员工处理。
 > v2.7.0 已加入：改竖成品序号强制顺延，不允许与同批原始素材同号。
@@ -75,7 +75,7 @@ python3 download.py --week-pipeline --user TM --dry-run
 python3 download.py --week-pipeline --user TM
 ```
 
-`--week-pipeline` 会从本周一到今天逐日搜索，并同时尝试 `YYMMDD` 与 `YYYYMMDD` 两种前缀。只有 `searched_prefixes` 全部检查完且 `todo=[]` 时，才允许说本周后台没有该用户待处理视频。
+`--week-pipeline` 会从本周一到今天逐日搜索，并同时尝试 `YYMMDD` 与 `YYYYMMDD` 两种前缀；还会扫描 `{用户}/后台下载/{YYYY-MM-DD}/` 下本周已下载但后台当前搜不到的横版源文件。只有 `searched_prefixes` 全部检查完、`local_scan_errors=[]` 且 `todo=[]` 时，才允许说本周没有该用户待处理视频。
 
 全员处理只允许 18789 主实例授权环境执行：
 
@@ -94,7 +94,7 @@ OPENCLAW_CHIEF_INSTANCE=18789 python3 download.py --batch-pipeline "260601" --al
 - [ ] 日志出现 `batch_done` 且 `failed=0`、`missing=0`
 - [ ] 异常条目记入 memory/errors.md
 - [ ] **处理单个员工时必须带 `--user USER`，dry-run 的 `todo` 必须逐条确认只含目标用户代码**
-- [ ] **处理“本周”必须先看 `--week-pipeline --dry-run` 的 `searched_prefixes`，不能只按今天/最近几天猜测**
+- [ ] **处理“本周”必须先看 `--week-pipeline --dry-run` 的 `searched_prefixes`、`eligible_from_local`、`local_only` 和 `local_scan_errors`，不能只按今天/最近几天猜测**
 - [ ] **跨员工批处理必须分用户执行，不允许只按日期前缀一次性跑全员，除非东玥/18789 主实例明确授权**
 - [ ] **不要向员工提供脚本命令作为便利入口；员工只提交自然语言任务，由实例按绑定用户执行**
 
@@ -352,7 +352,8 @@ OPENCLAW_CHIEF_INSTANCE=18789 python3 download.py --batch-pipeline "260529" --al
 ### v2.9.0（2026-06-10）
 - 新增：`--week-pipeline`，按本周一到今天逐日执行后台搜索和改竖，避免自然语言“本周”被小龙虾只查单日
 - 新增：每个日期同时搜索 `YYMMDD` 和 `YYYYMMDD` 两种前缀，并在结果里返回 `searched_prefixes`
-- 修正：只有本周所有前缀都查完且目标用户 `todo=[]` 时，才允许报告“后台没有待处理视频”
+- 新增：扫描本周本地目录中的横版源文件，处理“后台当前搜不到但本地已下载”的遗留待改竖视频
+- 修正：只有本周所有前缀都查完、`local_scan_errors=[]` 且目标用户 `todo=[]` 时，才允许报告“没有待处理视频”
 
 ### v2.7.0（2026-06-04）
 - 修正：改竖成品序号恢复顺延规则，`260604BY1/260604BY2` 的成品输出为 `260604BY3/260604BY4`
